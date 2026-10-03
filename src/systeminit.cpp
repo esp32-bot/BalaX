@@ -5,38 +5,69 @@
 #include "LCD.h"
 #include "wireless.h"
 
+
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include "COMS.h"
+#include "IO.h"
+#include "variables.h"
+#include "FileSystem.h"
+#include "movement.h"
+
+
 void SysInit_Setup(void){
+
+    M5.begin();
+
+    serial_Init();
+
+    Serial.println("SysInit_Setup() running on cpu#" + String(xPortGetCoreID()));
 
     //disableCore0WDT();
 
-    M5.begin();
+    
     Wire.begin(0, 26);  // SDA,SCL
 
     pinMode(LED, OUTPUT);
-    pinMode(SPEAKER, OUTPUT);
-
-    //ledcSetup(LED_CH, 5000, 8);
-    ledcSetup(SPEAKER_CH, 5000, 8);
-    //ledcAttachPin(LED, LED_CH);
-    ledcAttachPin(SPEAKER, SPEAKER_CH);
     
-    digitalWrite(LED, HIGH);
+    Setup_Speaker();
+
+
+    
+    RED_LED(true);
     Serial.println("");
     Serial.println("Starting Up Systems");
     // Serial.print("Setup() running on core ");
     // Serial.println(xPortGetCoreID());
-    digitalWrite(LED, LOW);
+    RED_LED(false);
     
-    LCD_Setup();
+    LCD_UI_Setup();
 
-    StartUp_Sound();
+    // Make backgroundCore Play the StartUp Sound in the background
+    xTaskCreatePinnedToCore(
+        StartUp_Sound,   /* Function to implement the task */
+        "StartUp_Sound", /* Name of the task */
+        10000,      /* Stack size in words */
+        NULL,       /* Task input parameter */
+        -2,          /* Priority of the task */
+        NULL,       /* Task handle. */
+    BackgroundCore);  /* Core where the task should run */
 
-    digitalWrite(LED, HIGH);
+    fs_setup();
 
-    Wireless_Setup();
+
+    //Zero Motors
+    resetMotor();
+
+    // Reset to Default Parameters
+    resetPara();
+
+    //Zero Out Variables
+    resetVar();
     
     Serial.print("...");
-    digitalWrite(LED, LOW);
+
+    is_booted = true;
 }
 
 
