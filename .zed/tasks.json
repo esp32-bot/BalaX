@@ -14,21 +14,35 @@
     "reveal": "always"
   },
   {
-    "label": "bx: flash",
+    "label": "bx: flash (USB)",
     "command": "tools/bx flash",
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "reveal": "always"
   },
   {
-    "label": "bx: run (flash + monitor)",
+    "label": "bx: lan-flash (Wireless LAN OTA)",
+    "command": "tools/bx lan-flash",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "always"
+  },
+  {
+    "label": "bx: lan-monitor (Wireless LAN Logs)",
+    "command": "tools/bx lan-monitor",
+    "use_new_terminal": true,
+    "allow_concurrent_runs": false,
+    "reveal": "always"
+  },
+  {
+    "label": "bx: run (USB flash + monitor)",
     "command": "tools/bx run",
     "use_new_terminal": true,
     "allow_concurrent_runs": false,
     "reveal": "always"
   },
   {
-    "label": "bx: monitor",
+    "label": "bx: monitor (USB)",
     "command": "tools/bx monitor",
     "use_new_terminal": true,
     "allow_concurrent_runs": false,
@@ -44,13 +58,6 @@
   {
     "label": "bx: preview status screen",
     "command": "tools/bx preview",
-    "use_new_terminal": false,
-    "allow_concurrent_runs": false,
-    "reveal": "always"
-  },
-  {
-    "label": "bx: cmd status",
-    "command": "tools/bx cmd status",
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "reveal": "always"

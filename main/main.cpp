@@ -12,6 +12,7 @@
 #include "sounds.h"
 #include "status.h"
 #include "wifi.h"
+#include "wifi_networks.h"
 
 namespace {
 
@@ -61,6 +62,7 @@ extern "C" void app_main() {
     ESP_ERROR_CHECK(robot::start());          // calibrates first, so lying still from the start helps
     board.speaker.play(STARTUP_MELODY);
     ESP_ERROR_CHECK(wifi::start(may_scan_for_networks));
+    ESP_ERROR_CHECK(ota::start_lan_server(LAN_AUTH_KEY));
     ESP_ERROR_CHECK(remote::start());
     ESP_ERROR_CHECK(start_status_screen());
     start_console();
