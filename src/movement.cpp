@@ -2,6 +2,7 @@
 
 
 #include "movement.h"
+#include "sounds.h"
 
 #include "SensorFusion.h"
 
@@ -277,12 +278,12 @@ void Abort(String MSG){
 
         M5.update();
         vTaskDelay(500);
-        ledcWriteTone(SPEAKER_CH,911);
+        Speaker_Tone(TONE_ABORT_HZ);
         digitalWrite(LED, HIGH);
         CheckButtons();
         vTaskDelay(50);
         digitalWrite(LED, LOW);
-        ledcWriteTone(SPEAKER_CH,0);
+        Speaker_Stop();
 
         if(M5.BtnA.wasPressed()){
             Serial.println("Button A was pressed");
@@ -713,16 +714,15 @@ void updateRobotOrientation(Robot_Side side, String sideString, bool isAtCenter,
 
         if (side == ROBOT_UNKNOWN_SIDE) {
             RED_LED(0);
-            ledcWriteTone(SPEAKER_CH,0);
+            Speaker_Stop();
         }else if(calibData.sideCalibrated[side] == false){
 
             float speaker_offset = ((Gs - RobotAlignmentActicationThreshold) * 50000)*0.1 + 0.9*speaker_offset;
             Serial.print("Speaker offset: ");
             Serial.println(speaker_offset);
 
-            ledcWriteTone(SPEAKER_CH,2000 + (int)(speaker_offset));
+            Speaker_Tone(TONE_ALIGNMENT_BASE_HZ + (int)(speaker_offset));
             
-            M5.Beep.setVolume(10);
             if (isAtCenter){
                 //ledcWriteTone(SPEAKER_CH,1000);
                 RED_LED(1);
@@ -1402,13 +1402,13 @@ void calibrateIMU() {
 
         case TOP_SIDE_STATE: case BOTTOM_SIDE_STATE: case FRONT_SIDE_STATE: case BACK_SIDE_STATE: case LEFT_SIDE_STATE: case RIGHT_SIDE_STATE:
             
-            ledcWriteTone(SPEAKER_CH,1200);
+            Speaker_Tone(TONE_CALIBRATING_SIDE_HZ);
 
             calculateRobotAlignment();
 
             if(robotHasBeenAlignedWithAxisForLongerThanThreshold()){
 
-                ledcWriteTone(SPEAKER_CH,1400);
+                Speaker_Tone(TONE_SIDE_ALIGNED_HZ);
 
                 vTaskDelay(1000);
 
@@ -1435,7 +1435,7 @@ void calibrateIMU() {
                 Serial.println("Calibration of " + String(currentSide) + " side complete");
                 RED_LED(0);
 
-                ledcWriteTone(SPEAKER_CH,0);
+                Speaker_Stop();
 
             }
         
