@@ -10,3 +10,6 @@ sdkconfig.old
 sdkconfig.local
 secrets/
 __pycache__/
+ota_stub/build/
+ota_stub/sdkconfig
+ota_stub/sdkconfig.old

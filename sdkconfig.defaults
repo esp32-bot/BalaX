@@ -9,14 +9,16 @@ CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
-# Speed
+# Coolest & most energy-efficient configuration for the sealed M5StickC Plus enclosure:
+# - 80 MHz CPU matches the 80 MHz APB bus required by Wi-Fi & 400 kHz I2C with minimum heat.
+# - 200 Hz RTOS tick (5 ms) evenly divides the 100 Hz (10 ms) control loop with 5x fewer idle wakeups.
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
-CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_80=y
+CONFIG_FREERTOS_HZ=200
 
-# Scale the CPU between 80 and 240 MHz on demand (configured in main.cpp)
+# Enable ESP power management (waiti clock-gating + Wi-Fi modem-sleep coordination)
 CONFIG_PM_ENABLE=y
-# Time spent in each task, for the CPU load on the status screen
+# Time spent in each task, for the CPU load on the status screen & `probe` command
 CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 
 # Quieter, faster boot

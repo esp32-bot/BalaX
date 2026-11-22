@@ -13,24 +13,28 @@
   - [x] `~/gh/g-ai/rc` (`https://github.com/g-AI-org/rc`)
   - [x] `~/gh/g-ai/gdog-remote` (`https://github.com/g-AI-org/gdog-remote`)
 - [x] Maximize modularity across `@esp32-bot` and `@g-AI-org`:
-  - [x] Extract shared ESP-IDF components (`m5stickc_plus`, `gfx`, `settings`, `console_commands`) and CLI tools into `esp32-bot/tools` (`~/gh/esp32-bot/tools/components`), leaving only `balac` and balancing logic in `balax`
+  - [x] Extract shared ESP-IDF components (`m5stickc_plus`, `gfx`, `settings`, `console_commands`, `ota`) and CLI tools into `esp32-bot/tools` (`~/gh/esp32-bot/tools/components`), leaving only `balac` and balancing logic in `balax`
   - [x] Create shared `@g-ai/rc` (`g-AI-org/rc`) low-latency remote control, link diagnostics, joystick math, and live tuning library and wire it into `esp32-bot/balax-remote`, `g-AI-org/gdog-remote`, and `0SFS/rc`
 
-## 2. Zero-Install Browser Flasher & Firmware Hosting (`esp32-bot.github.io`)
-- [x] Create static WebSerial flasher & USB console tool (`web/index.html`) so family/cousins can flash and configure robots from Chrome without installing Zed or ESP-IDF
+## 2. Zero-Install Browser Flasher, LAN OTA & Firmware Hosting (`esp32-bot.github.io`)
+- [x] Create static WebSerial flasher & USB console tool (`web/index.html`) importing shared `https://esp32-bot.github.io/tools/flasher.js`
 - [x] Add `tools/bx dist [stable|dev]` (`tools/dist.py`) to package `stable` and `dev` firmware channels (`web/fw/{stable|dev}/manifest.json` + binaries)
-- [ ] Add Wi-Fi OTA update component in firmware so robots check `esp32-bot.github.io/balax/fw/{stable|dev}/manifest.json` for new firmware
+- [x] Add Wi-Fi HTTPS OTA update component (`ota [stable|dev|url|version]`) in `esp32-bot/tools/components/ota`
+- [x] Add cryptographic LAN OTA flashing (`tools/bx lan-flash`), LAN log monitoring (`tools/bx lan-monitor`), and LAN command runner (`tools/bx lan-cmd`) using PBKDF2-HMAC-SHA256 + 256-bit hardware TRNG challenge nonces
 
 ## 3. Developer Setup One-Liner (`esp32-bot/tools`)
 - [x] Create one-liner bootstrap installer script (`install.sh` / `https://esp32-bot.github.io/tools/install.sh`) that clones `tools`, `balax`, `joyx`, and `balax-remote` into `~/gh/esp32-bot/` and launches the BalaX Studio GUI
 
-## 4. Web Remote PWA (`esp32-bot/balax-remote`, powered by `@g-ai/rc`)
-- [x] Scaffold installable React + Vite PWA using `@g-ai/rc` with floating camera-surface joystick, 50 Hz control loop, live RTT/Hz diagnostics, 60 FPS telemetry strip chart, 3D attitude indicator, and live PID gain sliders
-- [ ] Add WebSocket / UDP telemetry & control server endpoint in BalaX firmware (`main/wifi.cpp`) to stream 100 Hz telemetry to `balax-remote`
+## 4. Web Remote PWA & 0SFS-Style Babylon.js Live 3D Visualizer (`esp32-bot/balax-remote`)
+- [x] Scaffold installable React + Vite PWA using `@g-ai/rc` with floating joystick, live PID gain sliders, and 100 Hz telemetry strip chart
+- [x] Add 0SFS-style Babylon.js live 3D M5StickC Plus + BalaC visualizer (`src/BalaXBabylonScene.tsx`) driven by real-time 100 Hz pitch, wheel velocities, and robot state
+- [x] Add compressed binary (`BXZ1` delta + ZigZag + LEB128 varint) zero-drop telemetry streaming (`main/telemetry_stream.cpp` + `GET /api/stream?ack=<tick>`) with RAM queue + 64 KB Flash spillover (`0x3e0000`) that frees memory immediately on ACK
+- [x] Add localhost telemetry bridge & `.jsonl.gz` flight recorder (`telemetryBridgePlugin.ts` on `http://localhost:5180/api/bridge/{status,trace,cmd}`) so agents and humans can query full session telemetry locally
+- [ ] Log compressed telemetry onto the ESP32-CAM SD card when an ESP32-CAM hat/companion is attached (for offline outdoor runs without LAN)
 - [ ] Future links: WebBluetooth, ESP-NOW long-range relay, ESP32-CAM stabilized stream
 
 ## 5. BalaX Firmware Tasks
-- [ ] Tune balance gains on the floor (currently balances for a while, then falls)
+- [x] Turn softAP off by default when connected to a Wi-Fi network to save power (`main/wifi.cpp`), and automatically re-enable softAP when disconnected
+- [x] Set local robot volume override (`CONFIG_BALAX_DEFAULT_VOLUME=60` in gitignored `sdkconfig.local`) while keeping repo default at `100`
 - [ ] Evaluate unported features from Arduino branch if still needed: Madgwick filter, 6-side IMU calibration, JoyC polar mode
-- [ ] Optimize Wi-Fi power save / CPU frequency when idle while keeping ESP-NOW / Wi-Fi latency low
 - [ ] Test ESP-NOW link with a real JoyX remote while driving

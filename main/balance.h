@@ -89,8 +89,21 @@ struct Motors {
     int right = 0;
 };
 
+struct DebugTerms {
+    float pitch_deg = 0;
+    float pitch_dps = 0;
+    float angle_i = 0;
+    float rate_i = 0;
+    float speed = 0;
+    float distance = 0;
+    float power = 0;
+    float yaw_deg = 0;
+};
+
 class Robot {
 public:
+    // Use flash-saved IMU calibration: skip startup & post-fall CALIBRATING waits.
+    void use_saved_calibration();
     void request(Request request);
     // The remote's stick, -1..1 each way; 0, 0 holds position and heading.
     void steer(float forward, float turn);
@@ -104,8 +117,21 @@ public:
     bool armed() const;
     bool motors_live() const { return state_ == State::TAKEOFF || state_ == State::BALANCING; }
     float pitch_deg() const { return pitch_; }
+    float pitch_dps() const { return pitch_dps_; }
     float yaw_dps() const { return average_yaw_dps_; }
     Motors motors() const { return motors_; }
+    DebugTerms debug_terms() const {
+        return {
+            .pitch_deg = pitch_,
+            .pitch_dps = pitch_dps_,
+            .angle_i = angle_i_,
+            .rate_i = rate_i_,
+            .speed = speed_,
+            .distance = distance_,
+            .power = power_,
+            .yaw_deg = yaw_,
+        };
+    }
 
 private:
     struct Wheel {
@@ -127,6 +153,7 @@ private:
     Fault fault_ = Fault::NONE;
     int ticks_ = 0;  // in this state
     bool arm_when_calibrated_ = false;
+    bool external_calibration_ = false;
 
     // Calibration.
     float pitch_dps_offset_ = 0;

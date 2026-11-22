@@ -43,6 +43,7 @@ TEST(calibrates_then_waits_disarmed) {
     robot.step(LYING, GAINS);
     CHECK(robot.state() == State::READY);
     CHECK(!robot.armed());
+    CHECK(std::abs(robot.pitch_deg() - DEG_PER_G) < 1e-4f);
 }
 
 TEST(arming_during_calibration_waits_for_it) {

@@ -1,338 +1,297 @@
 #include "status_view.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdio>
-#include <initializer_list>
 #include <string_view>
 
 #include "status_layout.h"
 
 namespace status {
-
 namespace {
 
-using gfx::Canvas;
+using namespace std::string_view_literals;
 
-constexpr float PERCENT = 100;
-constexpr float FULL_LOAD = 99.95f;  // would show as "100.0%", too wide, so shows as "100%"
-constexpr long SECONDS_PER_MINUTE = 60;
-constexpr long SECONDS_PER_HOUR = 3600;
-constexpr int RIGHT = 1;
-constexpr int LEFT = -1;
-constexpr int NONE = 0;
+// gfx::Canvas clips to its own buffer. Translate screen coordinates to the current strip.
+class ScreenStrip {
+public:
+    ScreenStrip(std::span<uint16_t> pixels, int first_row)
+        : canvas_(pixels, m5::SCREEN_WIDTH, static_cast<int>(pixels.size() / m5::SCREEN_WIDTH)),
+          first_row_(first_row) {
+        assert(pixels.size() % m5::SCREEN_WIDTH == 0);
+        assert(first_row_ >= 0 && first_row_ + canvas_.height() <= m5::SCREEN_HEIGHT);
+    }
 
-// Short text for the screen, like "5.10V", or "--V" when the reading isn't available.
+    int top() const { return first_row_; }
+    int bottom() const { return first_row_ + canvas_.height(); }
+    bool includes(int y0, int y1) const { return y0 < bottom() && y1 > top(); }
+    void fill(uint16_t color) { canvas_.fill(color); }
+    void fill_rect(Rect r, uint16_t color) { canvas_.fill_rect(r.x, r.y - first_row_, r.w, r.h, color); }
+    void rect(Rect r, uint16_t color) { canvas_.rect(r.x, r.y - first_row_, r.w, r.h, color); }
+    void line(int x, int y, int width, uint16_t color) { canvas_.hline(x, y - first_row_, width, color); }
+    void text(int x, int y, std::string_view text, uint16_t color, int scale = 1) {
+        if (includes(y, y + gfx::Canvas::TEXT_HEIGHT * scale)) {
+            canvas_.text(x, y - first_row_, text, color, scale);
+        }
+    }
+
+private:
+    gfx::Canvas canvas_;
+    int first_row_;
+};
+
 struct Text {
     char chars[32];
     operator std::string_view() const { return chars; }
 };
 
-Text format(float value, int decimals, const char* unit, bool show_sign = false) {
+Text format(float value, int decimals, const char* unit, bool signed_value = false) {
     Text text;
-    if (std::isnan(value)) {
+    if (std::isfinite(value)) {
+        snprintf(text.chars, sizeof text.chars, signed_value ? "%+.*f%s" : "%.*f%s", decimals, value, unit);
+    } else {
         snprintf(text.chars, sizeof text.chars, "--%s", unit);
-    } else {
-        snprintf(text.chars, sizeof text.chars, show_sign ? "%+.*f%s" : "%.*f%s", decimals, value, unit);
     }
     return text;
 }
 
-// "05.3%": always LOAD_CHARS wide, so the loads don't jump around.
-Text format_load(float percent) {
-    if (std::isnan(percent) || percent >= FULL_LOAD) {
-        return format(std::isnan(percent) ? percent : PERCENT, 0, "%");
-    }
-    Text text;
-    snprintf(text.chars, sizeof text.chars, "%0*.1f%%", LOAD_CHARS - 1, percent);
-    return text;
+void centered(ScreenStrip& strip, Rect area, int y, std::string_view text, uint16_t color, int scale = 1) {
+    const int chars = (area.w / scale + 1) / gfx::Canvas::CHAR_ADVANCE;
+    text = text.substr(0, chars);
+    strip.text(area.center_x() - gfx::Canvas::text_width(text, scale) / 2, y, text, color, scale);
 }
 
-// "1:02:03"
-Text format_uptime(float seconds) {
-    const long s = std::isnan(seconds) ? 0 : static_cast<long>(seconds);
-    Text text;
-    snprintf(text.chars, sizeof text.chars, "%ld:%02ld:%02ld", s / SECONDS_PER_HOUR,
-             s % SECONDS_PER_HOUR / SECONDS_PER_MINUTE, s % SECONDS_PER_MINUTE);
-    return text;
+void right_aligned(ScreenStrip& strip, int right, int y, std::string_view text, uint16_t color) {
+    strip.text(right - gfx::Canvas::text_width(text), y, text, color);
 }
 
-// Digits and capitals leave the font's bottom (descender) row blank.
-constexpr int CAPITAL_HEIGHT = Canvas::TEXT_HEIGHT - 1;
-
-// Where text goes to look centered between `top` and `bottom`.
-int middle_text_y(int top, int bottom) {
-    return (top + bottom - Canvas::TEXT_HEIGHT) / 2 + 1;
-}
-
-void outline(Canvas& canvas, const Rect& box, uint16_t color = OUTLINE) {
-    canvas.rect(box.x, box.y, box.w, box.h, color);
-}
-
-void centered_on(Canvas& canvas, int center_x, int y, std::string_view text, uint16_t color, int scale = 1) {
-    canvas.text(center_x - Canvas::text_width(text, scale) / 2, y, text, color, scale);
-}
-
-void centered(Canvas& canvas, const Rect& box, int row, std::string_view text, uint16_t color) {
-    centered_on(canvas, box.center_x(), text_top(box, row), text, color);
-}
-
-// Fills `area` from the bottom up, `percent` of the way, like a battery.
-void fill_level(Canvas& canvas, const Rect& area, float percent, uint16_t color) {
-    if (std::isnan(percent)) {
-        return;
-    }
-    const int height = static_cast<int>(area.h * std::clamp(percent, 0.0f, PERCENT) / PERCENT);
-    canvas.fill_rect(area.x, area.bottom() - height, area.w, height, color);
-}
-
-// A box with its name and then one value per row, centered; all gray for a part that isn't
-// connected.
-void small_box(Canvas& canvas, const Rect& box, std::string_view name, std::initializer_list<Text> values,
-               bool connected = true) {
-    outline(canvas, box, connected ? OUTLINE : ABSENT);
-    centered(canvas, box, 0, name, connected ? LABEL : ABSENT);
-    for (int row = 1; const Text& value : values) {
-        centered(canvas, box, row++, value, connected ? VALUE : ABSENT);
-    }
-}
-
-void draw_part(Canvas& canvas, const Rect& box, const Peripheral& part, const Values& values) {
-    small_box(canvas, box, part.name, {format(values.*part.value, part.decimals, part.unit)});
-}
-
-// An arrowhead with its tip at (x, y).
-void arrowhead(Canvas& canvas, int x, int y, int direction, uint16_t color) {
-    for (int i = 0; i < ARROW; ++i) {
-        canvas.vline(x - direction * i, y - i, 2 * i + 1, color);
-    }
-}
-
-// A wire straight down from `top` to `bottom`, named beside it.
-void bus(Canvas& canvas, int x, int top, int bottom, std::string_view name, uint16_t color = WIRE) {
-    canvas.vline(x, top, bottom - top, color);
-    canvas.text(x + BUS_LABEL_GAP, middle_text_y(top, bottom), name, BUS);
-}
-
-void draw_title(Canvas& canvas, const Values& values) {
-    canvas.text(MARGIN, TITLE_Y, "BalaX", TITLE);
-    const Text uptime = format_uptime(values.uptime_s);
-    canvas.text(m5::SCREEN_WIDTH - MARGIN - Canvas::text_width(uptime), TITLE_Y, uptime, VALUE);
-}
-
-// A power wire from the box ending at `left` to the box starting at `right`: green with an
-// arrowhead against the box current flows into, gray when none flows.
-void power_wire(Canvas& canvas, int left, int right, int flow) {
-    canvas.hline(left, POWER_WIRE_Y, right - left, flow == NONE ? WIRE : FLOW);
-    if (flow == RIGHT) {
-        arrowhead(canvas, right - 1, POWER_WIRE_Y, RIGHT, FLOW);
-    } else if (flow == LEFT) {
-        arrowhead(canvas, left, POWER_WIRE_Y, LEFT, FLOW);
-    }
-}
-
-bool usb_connected(const Values& values) {
-    return values.usb_v >= USB_PRESENT_V;  // false for NaN too
-}
-
-// Current from USB into the power chip, and between it and the battery. (Comparisons with
-// NaN are false, so an unknown reading shows no current.)
-void draw_power_wires(Canvas& canvas, const Values& values) {
-    power_wire(canvas, USB_BOX.right(), PMIC_BOX.x, usb_connected(values) ? RIGHT : NONE);
-    const int battery_flow = values.battery_ma >= FLOW_MIN_MA    ? RIGHT
-                             : values.battery_ma <= -FLOW_MIN_MA ? LEFT
-                                                                 : NONE;
-    power_wire(canvas, PMIC_BOX.right(), BATTERY.x, battery_flow);
-}
-
-uint16_t charge_color(float percent) {
-    return percent >= CHARGE_MID_PCT ? CHARGE_HIGH : percent >= CHARGE_LOW_PCT ? CHARGE_MID : CHARGE_LOW;
-}
-
-// A battery standing up, filled from the bottom as far as it's charged.
-void draw_battery(Canvas& canvas, const Values& values) {
-    fill_level(canvas, inside(BATTERY), values.battery_pct, charge_color(values.battery_pct));
-    outline(canvas, BATTERY);
-    canvas.fill_rect(BATTERY.center_x() - BATTERY_NUB_W / 2, BATTERY.y - BATTERY_NUB_H, BATTERY_NUB_W, BATTERY_NUB_H,
-                     OUTLINE);
-    centered(canvas, BATTERY, 0, format(values.battery_pct, 0, "%"), VALUE);
-    centered(canvas, BATTERY, 1, format(values.battery_v, 2, "V"), VALUE);
-    centered(canvas, BATTERY, 2, format(values.battery_ma, 0, "mA", true), VALUE);
-}
-
-// "CPU 240MHz" over each core's load, each core filling its half of the box from the bottom
-// as far as it's busy.
-void draw_cpu(Canvas& canvas, const Values& values) {
-    const float loads[] = {values.cpu0_load, values.cpu1_load};
-    for (int core = 0; const float load : loads) {
-        const Rect area = half(CPU_BOX, core++);
-        fill_level(canvas, area, load, USAGE);
-        centered_on(canvas, area.center_x(), text_top(CPU_BOX, 1), format_load(load), VALUE);
-    }
-    outline(canvas, CPU_BOX);
-    const Text mhz = format(values.cpu_mhz, 0, "MHz");
-    const int width = Canvas::text_width("CPU") + Canvas::CHAR_ADVANCE + Canvas::text_width(mhz);
-    const int x = CPU_BOX.center_x() - width / 2;
-    const int top = text_top(CPU_BOX, 0);
-    canvas.text(x + canvas.text(x, top, "CPU", LABEL) + Canvas::CHAR_ADVANCE, top, mhz, VALUE);
-}
-
-// Used over total, as a fraction, filled from the bottom as far as it's used.
-void draw_ram(Canvas& canvas, const Values& values) {
-    fill_level(canvas, inside(RAM_BOX), values.ram_used_kb / values.ram_total_kb * PERCENT, USAGE);
-    outline(canvas, RAM_BOX);
-    centered(canvas, RAM_BOX, 0, format(values.ram_used_kb, 0, ""), VALUE);
-    const Text total = format(values.ram_total_kb, 0, "KB");
-    const int bar_w = Canvas::text_width(total);
-    canvas.hline(RAM_BOX.center_x() - bar_w / 2, text_top(RAM_BOX, 0) + Canvas::TEXT_HEIGHT, bar_w, VALUE);
-    centered(canvas, RAM_BOX, 1, total, VALUE);
-}
-
-// The wheels' power, each filling its half of the box by how hard it drives, colored by which
-// way.
-void draw_base(Canvas& canvas, const Values& values) {
-    bus(canvas, BASE_BUS_X, RAM_BOX.bottom(), BASE_BOX.y, BASE_BUS);
-    const bool present = !std::isnan(values.motor_left);
-    Text motors;
-    if (present) {
-        const float powers[] = {values.motor_left, values.motor_right};
-        for (int side = 0; const float power : powers) {
-            fill_level(canvas, half(BASE_BOX, side++), std::abs(power) / FULL_MOTOR_POWER * PERCENT,
-                       power >= 0 ? FORWARD : BACKWARD);
-        }
-        snprintf(motors.chars, sizeof motors.chars, "%+0*.0f %+0*.0f", MOTOR_CHARS, values.motor_left, MOTOR_CHARS,
-                 values.motor_right);
-    } else {
-        motors = format(NAN, 0, "");
-    }
-    small_box(canvas, BASE_BOX, BASE_NAME, {motors}, present);
-}
+constexpr Rect FULL_WIDTH = {0, 0, m5::SCREEN_WIDTH, m5::SCREEN_HEIGHT};
 
 struct StateLook {
     uint16_t color;
-    std::string_view hint;  // what the robot needs from you
+    const char* hint;
 };
 
 StateLook look(balance::State state) {
     switch (state) {
-        case balance::State::CALIBRATING: return {STATE_WAITING, "keep it still"};
-        case balance::State::READY: return {STATE_IDLE, "press A to arm"};
-        case balance::State::ARMED: return {STATE_WAITING, "stand it up"};
-        case balance::State::LEVELING: return {STATE_WAITING, "hold it upright"};
-        case balance::State::TAKEOFF: return {STATE_MOVING, ""};
-        case balance::State::BALANCING: return {STATE_MOVING, ""};
-        case balance::State::FALLEN: return {STATE_FAULT, "press A"};
+        case balance::State::CALIBRATING: return {WARNING, "Keep it still"};
+        case balance::State::READY: return {VALUE, "Press A to arm"};
+        case balance::State::ARMED: return {WARNING, "Stand it up"};
+        case balance::State::LEVELING: return {WARNING, "Hold it upright"};
+        case balance::State::TAKEOFF:
+        case balance::State::BALANCING: return {FLOW, ""};
+        case balance::State::FALLEN: return {DANGER, "Press A"};
     }
-    return {STATE_IDLE, ""};
+    return {VALUE, ""};
 }
 
-// The state in big letters, what it needs from you under it ("TILT: press A" after a fall),
-// then the tilt and the control loop's longest tick.
-void draw_state(Canvas& canvas, const Values& values) {
-    const int center = m5::SCREEN_WIDTH / 2;
-    const StateLook state = look(values.state);
-    centered_on(canvas, center, STATE_Y, balance::name(values.state), state.color, STATE_SCALE);
+void draw_header(ScreenStrip& strip, const Values& v) {
+    strip.text(MARGIN, 2, "BalaX", TITLE);
+    if (std::isfinite(v.uptime_s)) {
+        const long s = static_cast<long>(v.uptime_s);
+        Text uptime;
+        snprintf(uptime.chars, sizeof uptime.chars, "%ld:%02ld:%02ld", s / 3600, s / 60 % 60, s % 60);
+        right_aligned(strip, m5::SCREEN_WIDTH - MARGIN, 2, uptime, LABEL);
+    }
+    const StateLook state = look(v.state);
+    centered(strip, FULL_WIDTH, STATE_Y, balance::name(v.state), state.color, STATE_SCALE);
+    const auto fault = balance::name(v.fault);
     Text hint;
-    if (values.fault != balance::Fault::NONE) {
-        const std::string_view fault = balance::name(values.fault);
-        snprintf(hint.chars, sizeof hint.chars, "%.*s: %.*s", static_cast<int>(fault.size()), fault.data(),
-                 static_cast<int>(state.hint.size()), state.hint.data());
+    if (v.fault == balance::Fault::NONE) {
+        snprintf(hint.chars, sizeof hint.chars, "%s", state.hint);
     } else {
-        snprintf(hint.chars, sizeof hint.chars, "%.*s", static_cast<int>(state.hint.size()), state.hint.data());
+        snprintf(hint.chars, sizeof hint.chars, "%.*s: %s", static_cast<int>(fault.size()), fault.data(), state.hint);
     }
-    centered_on(canvas, center, HINT_Y, hint, state.color);
-    const int x = MARGIN + canvas.text(MARGIN, DETAIL_Y, "pitch", LABEL) + Canvas::CHAR_ADVANCE;
-    canvas.text(x, DETAIL_Y, format(values.pitch_deg, 1, "", true), VALUE);
-    const Text tick = format(values.tick_ms, 2, "ms");
-    canvas.text(m5::SCREEN_WIDTH - MARGIN - Canvas::text_width(tick), DETAIL_Y, tick, VALUE);
+    centered(strip, FULL_WIDTH, HINT_Y, hint, state.color);
 }
 
-// A left-aligned row of a box: a name, then a value cut to what fits.
-void labeled_row(Canvas& canvas, const Rect& box, int row, std::string_view name, std::string_view value,
-                 uint16_t color) {
-    const int top = text_top(box, row);
-    int x = text_left(box);
-    int room = chars_fitting(box);
-    if (!name.empty()) {
-        x += canvas.text(x, top, name, LABEL) + Canvas::CHAR_ADVANCE;
-        room -= static_cast<int>(name.size()) + 1;
-    }
-    canvas.text(x, top, value.substr(0, std::max(room, 0)), color);
-}
-
-// Signal strength as bars standing on `row`'s line of text, at the right of the box.
-void signal_bars(Canvas& canvas, const Rect& box, int row, float rssi) {
-    const int base = text_top(box, row) + CAPITAL_HEIGHT;
-    int x = box.right() - 1 - PADDING - SIGNAL_W;
-    for (int bar = 1; const float dbm : SIGNAL_BAR_DBM) {
-        const int height = bar++ * SIGNAL_BAR_STEP - 1;
-        canvas.fill_rect(x, base - height, SIGNAL_BAR_W, height, rssi >= dbm ? VALUE : ABSENT);
-        x += SIGNAL_BAR_W + SIGNAL_BAR_GAP;
+void dot(ScreenStrip& strip, int x, int y, int radius, uint16_t color) {
+    for (int row = -radius; row <= radius; ++row) {
+        const int width = static_cast<int>(std::sqrt(radius * radius - row * row));
+        strip.line(x - width, y + row, 2 * width + 1, color);
     }
 }
 
-// The network it's on, its address and signal, then its own access point and the channel
-// both use.
-void draw_wifi(Canvas& canvas, const Values& values) {
-    outline(canvas, WIFI_BOX);
-    const bool connected = values.wifi_ssid[0] != '\0';
-    const Text none = format(NAN, 0, "");
-    labeled_row(canvas, WIFI_BOX, 0, "WiFi", connected ? values.wifi_ssid : values.wifi_phase,
-                connected ? VALUE : ABSENT);
-    labeled_row(canvas, WIFI_BOX, 1, "", connected ? std::string_view(values.wifi_ip) : none,
-                connected ? VALUE : ABSENT);
-    if (connected) {
-        signal_bars(canvas, WIFI_BOX, 1, values.wifi_rssi);
+void level(ScreenStrip& strip, Rect area, float fraction, uint16_t color) {
+    if (std::isfinite(fraction)) {
+        const int height = static_cast<int>(area.h * std::clamp(fraction, 0.0f, 1.0f));
+        strip.fill_rect({area.x, area.bottom() - height, area.w, height}, color);
     }
-    const Text channel = format(values.wifi_channel, 0, "");
-    char access_point[SSID_SIZE + sizeof " ch" + sizeof channel.chars];
-    snprintf(access_point, sizeof access_point, "%s ch%s", values.ap_ssid, channel.chars);
-    labeled_row(canvas, WIFI_BOX, 2, "AP", access_point, VALUE);
 }
 
-// The remote, on a wire that's green while it's talking, with its stick.
-void draw_remote(Canvas& canvas, const Values& values) {
-    const bool live = values.remote_live;
-    bus(canvas, REMOTE_BOX.center_x(), WIFI_BOX.bottom(), REMOTE_BOX.y, REMOTE_BUS, live ? FLOW : WIRE);
-    Text stick;
-    if (live) {
-        snprintf(stick.chars, sizeof stick.chars, "%+.1f %+.1f", values.remote_forward, values.remote_turn);
-    } else {
-        stick = format(NAN, 0, "");
+void draw_motor(ScreenStrip& strip, int x, float power) {
+    const Rect meter = {x, HORIZON.y + 7, 8, HORIZON.h - 21};
+    strip.fill_rect(meter, BACKGROUND);
+    strip.rect(meter, OUTLINE);
+    if (std::isfinite(power)) {
+        const int travel = static_cast<int>((meter.h / 2 - 1) * std::clamp(power / 127.0f, -1.0f, 1.0f));
+        const int zero = meter.center_y();
+        strip.fill_rect({meter.x + 1, std::min(zero, zero - travel), meter.w - 2, std::abs(travel)},
+                        power >= 0 ? FLOW : DANGER);
+        strip.line(meter.x + 1, zero, meter.w - 2, VALUE);
     }
-    small_box(canvas, REMOTE_BOX, REMOTE_NAME, {stick}, live);
+}
+
+void draw_horizon(ScreenStrip& strip, const ScreenValues& values) {
+    const Values& v = values.status;
+    const Rect area = inside(HORIZON);
+    strip.rect(HORIZON, OUTLINE);
+    if (v.state == balance::State::CALIBRATING || !std::isfinite(values.pitch_deg) ||
+        !std::isfinite(values.roll_deg)) {
+        strip.fill_rect(area, PANEL);
+        centered(strip, area, area.center_y() - 4, "Attitude unavailable", LABEL);
+        return;
+    }
+
+    const int x_mid = area.center_x();
+    const int y_mid = area.center_y() - 4;
+    const float radians = values.roll_deg * 0.01745329252f;
+    const float slope = std::sin(radians);
+    const float up = std::cos(radians);
+    const float pitch = values.pitch_deg * 1.25f;
+    for (int y = std::max(area.y, strip.top()); y < std::min(area.bottom(), strip.bottom()); ++y) {
+        const float distance = (y - y_mid) * up - pitch;
+        if (std::abs(slope) < 0.001f) {
+            strip.line(area.x, y, area.w, distance < 0 ? SKY : GROUND);
+            continue;
+        }
+        const int split = std::clamp(static_cast<int>(std::ceil(x_mid - distance / slope)), area.x, area.right());
+        strip.line(area.x, y, split - area.x, slope > 0 ? SKY : GROUND);
+        strip.line(split, y, area.right() - split, slope > 0 ? GROUND : SKY);
+    }
+
+    // Fixed aircraft reference, signed wheel output bars and the live JoyX stick position.
+    for (int y = y_mid - 1; y <= y_mid + 1; ++y) {
+        strip.line(x_mid - 23, y, 15, y == y_mid ? VALUE : BACKGROUND);
+        strip.line(x_mid + 9, y, 15, y == y_mid ? VALUE : BACKGROUND);
+    }
+    dot(strip, x_mid, y_mid, 3, BACKGROUND);
+    dot(strip, x_mid, y_mid, 1, VALUE);
+    draw_motor(strip, area.x + 4, v.motor_left);
+    draw_motor(strip, area.right() - 12, v.motor_right);
+    if (v.remote_live && std::isfinite(v.remote_turn) && std::isfinite(v.remote_forward)) {
+        const int x = x_mid + static_cast<int>(std::lround(std::clamp(v.remote_turn, -1.0f, 1.0f) * 36));
+        const int y = y_mid - static_cast<int>(std::lround(std::clamp(v.remote_forward, -1.0f, 1.0f) * 20));
+        dot(strip, x, y, 4, BACKGROUND);
+        dot(strip, x, y, 2, FLOW);
+    }
+
+    const Rect footer = {area.x, area.bottom() - 11, area.w, 11};
+    strip.fill_rect(footer, BACKGROUND);
+    Text angles;
+    snprintf(angles.chars, sizeof angles.chars, "P%+.0f R%+.0f", values.pitch_deg, values.roll_deg);
+    strip.text(footer.x + 2, footer.y + 2, angles, VALUE);
+    right_aligned(strip, footer.right() - 2, footer.y + 2, v.remote_live ? "JoyX" : "", FLOW);
+}
+
+void draw_battery(ScreenStrip& strip, const Values& v) {
+    const uint16_t color = !std::isfinite(v.battery_pct) ? ABSENT
+                           : v.battery_pct < 25 ? DANGER
+                           : v.battery_ma > 5 ? TITLE
+                           : v.battery_pct < 45 ? WARNING : FLOW;
+    const Text pct = format(v.battery_pct, 0, "%");
+    strip.text(MARGIN, 116, "BAT", LABEL);
+    strip.text(27, 113, pct, color, 2);
+    right_aligned(strip, m5::SCREEN_WIDTH - MARGIN, 113, format(v.battery_v, 2, "V"), VALUE);
+    right_aligned(strip, m5::SCREEN_WIDTH - MARGIN, 123, format(v.battery_ma, 0, "mA", true), color);
+    strip.fill_rect(BATTERY_BAR, PANEL);
+    strip.rect(BATTERY_BAR, OUTLINE);
+    if (std::isfinite(v.battery_pct)) {
+        Rect fill = inside(BATTERY_BAR);
+        fill.w = static_cast<int>(fill.w * std::clamp(v.battery_pct, 0.0f, 100.0f) / 100);
+        strip.fill_rect(fill, color);
+    }
+}
+
+void draw_compute(ScreenStrip& strip, const Values& v) {
+    strip.fill_rect(CPU_BOX, PANEL);
+    const Rect cpu = inside(CPU_BOX);
+    level(strip, half(cpu, 0), v.cpu0_load / 100, USAGE);
+    level(strip, half(cpu, 1), v.cpu1_load / 100, USAGE);
+    strip.rect(CPU_BOX, OUTLINE);
+    strip.fill_rect({cpu.center_x(), cpu.y + 11, 1, cpu.h - 11}, OUTLINE);
+    Text speed;
+    const Text mhz = format(v.cpu_mhz, 0, "MHz");
+    snprintf(speed.chars, sizeof speed.chars, "CPU %.12s", mhz.chars);
+    centered(strip, cpu, cpu.y + 2, speed, LABEL);
+    centered(strip, half(cpu, 0), cpu.y + 13, format(v.cpu0_load, 0, "%"), VALUE);
+    centered(strip, half(cpu, 1), cpu.y + 13, format(v.cpu1_load, 0, "%"), VALUE);
+
+    strip.fill_rect(RAM_BOX, PANEL);
+    const Rect ram = inside(RAM_BOX);
+    level(strip, ram, v.ram_used_kb / v.ram_total_kb, USAGE);
+    strip.rect(RAM_BOX, OUTLINE);
+    centered(strip, ram, ram.y + 2, "RAM used", LABEL);
+    Text ratio;
+    const Text used = format(v.ram_used_kb, 0, "");
+    const Text total = format(v.ram_total_kb, 0, "");
+    snprintf(ratio.chars, sizeof ratio.chars, "%.7s/%.7s", used.chars, total.chars);
+    centered(strip, ram, ram.y + 13, ratio, VALUE);
+}
+
+uint16_t thermal_color(float value, float warm, float hot) {
+    return !std::isfinite(value) ? ABSENT : value >= hot ? DANGER : value >= warm ? WARNING : VALUE;
+}
+
+void draw_part(ScreenStrip& strip, Rect box, std::string_view name, std::string_view top,
+               std::string_view bottom, uint16_t color) {
+    strip.fill_rect(box, PANEL);
+    strip.rect(box, OUTLINE);
+    const Rect area = inside(box);
+    centered(strip, area, area.y + 1, name, LABEL);
+    centered(strip, area, area.y + 9, top, color);
+    centered(strip, area, area.y + 17, bottom, color);
+}
+
+void draw_components(ScreenStrip& strip, const Values& v) {
+    const bool usb_connected = v.usb_v >= 4;
+    draw_part(strip, USB_BOX, "USB", usb_connected ? format(v.usb_v, 2, "V") : format(NAN, 0, "V"),
+              usb_connected ? format(v.usb_ma, 0, "mA") : format(NAN, 0, "mA"), usb_connected ? VALUE : ABSENT);
+    draw_part(strip, PMIC_BOX, "AXP192", format(v.pmic_c, 1, "C"), "",
+              thermal_color(v.pmic_c, 42, 46));
+    draw_part(strip, IMU_BOX, "IMU", format(v.imu_c, 1, "C"), "",
+              thermal_color(v.imu_c, 52, 58));
+    strip.line(USB_BOX.right(), USB_BOX.center_y(), PMIC_BOX.x - USB_BOX.right(), usb_connected ? FLOW : OUTLINE);
+    strip.line(PMIC_BOX.right(), PMIC_BOX.center_y(), IMU_BOX.x - PMIC_BOX.right(), OUTLINE);
+}
+
+void draw_footer(ScreenStrip& strip, const ScreenValues& values) {
+    const Values& v = values.status;
+    const bool connected = v.wifi_ssid[0] != '\0';
+    Text wifi;
+    snprintf(wifi.chars, sizeof wifi.chars, "WiFi %.16s", connected ? v.wifi_ssid : v.wifi_phase);
+    strip.text(MARGIN, 201, wifi, connected ? TITLE : LABEL);
+    strip.text(MARGIN, 211, connected ? std::string_view(v.wifi_ip) : "balax.local"sv, VALUE);
+    if (connected && std::isfinite(v.wifi_rssi)) {
+        right_aligned(strip, m5::SCREEN_WIDTH - MARGIN, 211, format(v.wifi_rssi, 0, "dBm"), LABEL);
+    }
+    Text timing;
+    const Text tick = format(v.tick_ms, 2, "ms");
+    const Text overruns = format(v.overruns, 0, "");
+    snprintf(timing.chars, sizeof timing.chars, "Tick %.8s  O:%.8s", tick.chars, overruns.chars);
+    strip.text(MARGIN, 222, timing, v.overruns > 0 ? DANGER : LABEL);
+    Text flash;
+    snprintf(flash.chars, sizeof flash.chars, "E:%lu S:%lu", static_cast<unsigned long>(values.flash_erases),
+             static_cast<unsigned long>(values.flash_skipped));
+    strip.text(MARGIN, 232, std::string_view(flash).substr(0, 13), LABEL);
+    Text vm;
+    snprintf(vm.chars, sizeof vm.chars, "VM:%lu", static_cast<unsigned long>(values.vm_hits));
+    right_aligned(strip, m5::SCREEN_WIDTH - MARGIN, 232, std::string_view(vm).substr(0, 8),
+                  values.vm_running ? WARNING : LABEL);
 }
 
 }  // namespace
 
-void draw(Canvas& canvas, const Values& values) {
-    canvas.fill(BACKGROUND);
-    draw_title(canvas, values);
-
-    draw_power_wires(canvas, values);
-    small_box(canvas, USB_BOX, "USBC", {format(values.usb_v, 2, "V"), format(values.usb_ma, 0, "mA")},
-              usb_connected(values));
-    small_box(canvas, PMIC_BOX, PMIC_NAME, {format(values.pmic_c, 1, "C")});
-    draw_battery(canvas, values);
-
-    bus(canvas, PMIC_BOX.center_x(), PMIC_BOX.bottom(), CPU_BOX.y, "3V3");
-    draw_cpu(canvas, values);
-    draw_ram(canvas, values);
-
-    canvas.hline(RAM_BOX.right(), LCD_BOX.center_y(), LCD_BOX.x - RAM_BOX.right(), WIRE);
-    centered_on(canvas, LCD_BOX.center_x(), LCD_BUS_Y, LCD.bus, BUS);
-    draw_part(canvas, LCD_BOX, LCD, values);
-
-    for (int index = 0; const Peripheral& part : PERIPHERALS) {
-        const Rect box = peripheral_box(index++);
-        bus(canvas, box.center_x(), CPU_BOX.bottom(), box.y, part.bus);
-        draw_part(canvas, box, part, values);
-    }
-    draw_base(canvas, values);
-
-    draw_state(canvas, values);
-    draw_wifi(canvas, values);
-    draw_remote(canvas, values);
+void draw(std::span<uint16_t> pixels, int first_row, const ScreenValues& values) {
+    ScreenStrip strip(pixels, first_row);
+    strip.fill(BACKGROUND);
+    if (strip.includes(0, 39)) draw_header(strip, values.status);
+    if (strip.includes(HORIZON.y, HORIZON.bottom())) draw_horizon(strip, values);
+    if (strip.includes(113, BATTERY_BAR.bottom())) draw_battery(strip, values.status);
+    if (strip.includes(CPU_BOX.y, CPU_BOX.bottom())) draw_compute(strip, values.status);
+    if (strip.includes(USB_BOX.y, USB_BOX.bottom())) draw_components(strip, values.status);
+    if (strip.includes(201, m5::SCREEN_HEIGHT)) draw_footer(strip, values);
 }
 
 }  // namespace status

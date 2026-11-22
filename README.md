@@ -21,14 +21,19 @@ Power button: short press restarts, long press powers off (motors stop, melody p
 tools/bx build | flash | run | monitor | test | preview | cmd <command>...
 ```
 
-Needs ESP-IDF v6.1.1 at `~/esp/v6.1.1/esp-idf`. `tools/bx test` runs the C++ tests (clang,
+Needs ESP-IDF v6.1.1 at `~/esp/v6.1.1/esp-idf` and the [shared ESP32 tools
+repository](https://github.com/esp32-bot/tools) checked out beside BalaX as `../tools`.
+`tools/bx test` runs the C++ tests (clang,
 on the laptop) and the Python ones. `tools/bx preview` renders the status screen to
 `host/build/preview.png`. Anything that can be tested without the robot lives in plain C++
 headers/sources (`balance`, `remote_protocol`, `status_*`) and is built for the laptop too.
 
-Console commands (`tools/bx cmd status`): `status`, `arm`, `disarm`, `takeoff`, `beep`,
+Console commands (`tools/bx cmd status`): `status`, `partitions`, `arm`, `disarm`, `takeoff`, `beep`,
 `play`, `reboot`, plus `get`/`set`/`save` for settings (volume, brightness and all 16
 balance gains, each with a range).
+
+`balax lan-cmd "partitions"` reads the installed flash table and reports the running
+image and OTA slot roles. The remote's Flash tab displays the same robot data.
 
 ### Wi-Fi
 
@@ -43,5 +48,7 @@ tools/bx build && tools/bx flash
 
 `tools/wifi.py` writes a header into `build/` that the firmware includes.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how it is put together and
-[docs/HARDWARE.md](docs/HARDWARE.md) for the hardware and protocol facts.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how it is put together,
+[docs/HARDWARE.md](docs/HARDWARE.md) for runtime hardware and protocol facts, and
+[docs/silicon/README.md](docs/silicon/README.md) for deep silicon references (M5StickC Plus,
+BalaC base, AI-Thinker ESP32-CAM, and OV2640).

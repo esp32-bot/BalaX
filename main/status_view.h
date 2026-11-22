@@ -1,14 +1,27 @@
 #pragma once
 
-// Draws the status screen; status_layout.h says where everything goes. Plain C++, so laptop
-// builds can render it (tools/bx preview).
+// Shared by the robot LCD and the host preview. The robot renders one strip at a time.
+#include <cstdint>
+#include <span>
 
-#include "gfx/canvas.h"
 #include "status_values.h"
 
 namespace status {
 
-// Draws the whole screen. The canvas is the screen's size.
-void draw(gfx::Canvas& canvas, const Values& values);
+struct ScreenValues {
+    const Values& status;
+    float pitch_deg = NAN;
+    float roll_deg = NAN;
+    uint32_t flash_erases = 0;
+    uint32_t flash_skipped = 0;
+    uint32_t vm_hits = 0;
+    bool vm_running = false;
+};
+
+inline constexpr int STRIP_ROWS = 10;
+inline constexpr int ATTITUDE_ROWS = 120;
+
+// Renders whole rows starting at first_row, into a screen-width RGB565 pixel span.
+void draw(std::span<uint16_t> pixels, int first_row, const ScreenValues& values);
 
 }  // namespace status

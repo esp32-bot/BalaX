@@ -54,4 +54,8 @@ struct Status {
 };
 Status status();
 
+// Just the address (network byte order, 0 until connected): no radio calls, so it is cheap
+// enough to ask for every mDNS question.
+uint32_t ip();
+
 }  // namespace wifi

@@ -76,8 +76,10 @@ bool accept(const uint8_t* mac, int64_t now_us) {
     }
     esp_now_peer_info_t peer = {};
     memcpy(peer.peer_addr, mac, sizeof peer.peer_addr);
-    peer.channel = 0;         // whichever the radio is on
-    peer.ifidx = WIFI_IF_AP;  // the remote sent to the access point, so answer from it
+    peer.channel = 0;  // whichever the radio is on
+    wifi_mode_t mode = WIFI_MODE_STA;
+    esp_wifi_get_mode(&mode);
+    peer.ifidx = (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA) ? WIFI_IF_AP : WIFI_IF_STA;
     peer.encrypt = false;
     const bool added = esp_now_add_peer(&peer) == ESP_OK;
     update([&](Link& current, int64_t&) {

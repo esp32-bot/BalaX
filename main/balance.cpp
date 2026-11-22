@@ -5,17 +5,30 @@
 
 namespace balance {
 
+void Robot::use_saved_calibration() {
+    external_calibration_ = true;
+    pitch_dps_offset_ = 0;
+    yaw_dps_offset_ = 0;
+    if (state_ == State::CALIBRATING) {
+        enter(arm_when_calibrated_ ? State::ARMED : State::READY);
+    }
+}
+
 void Robot::request(Request request) {
     const bool fallen = state_ == State::FALLEN;
     switch (request) {
         case Request::NONE:
             break;
         case Request::ARM:
-            if (fallen || state_ == State::CALIBRATING) {
-                arm_when_calibrated_ = true;
-                if (fallen) {
+            if (fallen) {
+                if (external_calibration_) {
+                    enter(State::ARMED);
+                } else {
+                    arm_when_calibrated_ = true;
                     enter(State::CALIBRATING);  // it fell, so it's lying still
                 }
+            } else if (state_ == State::CALIBRATING) {
+                arm_when_calibrated_ = true;
             } else if (state_ == State::READY) {
                 enter(State::ARMED);
             }
@@ -23,7 +36,7 @@ void Robot::request(Request request) {
         case Request::DISARM:
             arm_when_calibrated_ = false;
             if (fallen) {
-                enter(State::CALIBRATING);
+                enter(external_calibration_ ? State::READY : State::CALIBRATING);
             } else if (state_ != State::CALIBRATING) {
                 enter(State::READY);
             }
@@ -76,6 +89,8 @@ Motors Robot::step(const Imu& imu, const Gains& gains) {
             break;
         case State::TAKEOFF:
             if (upright(average_up_g_)) {
+                pitch_ = (imu.forward_g - forward_g_offset_) * DEG_PER_G;
+                pitch_dps_ = 0;
                 enter(State::BALANCING);
                 drive(gains);
             } else if (ticks_ > TAKEOFF_TICKS) {
@@ -144,9 +159,13 @@ void Robot::calibrate_gyro(const Imu& imu) {
     }
     pitch_dps_sum_ += imu.pitch_dps;
     yaw_dps_sum_ += imu.yaw_dps;
+    forward_g_sum_ += imu.forward_g;
     if (ticks_ == GYRO_SETTLE_TICKS + GYRO_SAMPLE_TICKS) {
         pitch_dps_offset_ = pitch_dps_sum_ / GYRO_SAMPLE_TICKS;
         yaw_dps_offset_ = yaw_dps_sum_ / GYRO_SAMPLE_TICKS;
+        const float mean_forward_g = forward_g_sum_ / GYRO_SAMPLE_TICKS;
+        pitch_ = (mean_forward_g - forward_g_offset_) * DEG_PER_G;
+        pitch_dps_ = 0;
         enter(arm_when_calibrated_ ? State::ARMED : State::READY);
     }
 }
@@ -164,7 +183,9 @@ void Robot::level(const Imu& imu) {
     yaw_dps_sum_ += imu.yaw_dps;
     if (ticks_ == LEVEL_SETTLE_TICKS + LEVEL_SAMPLE_TICKS) {
         forward_g_offset_ = forward_g_sum_ / LEVEL_SAMPLE_TICKS;
-        yaw_dps_offset_ = yaw_dps_sum_ / LEVEL_SAMPLE_TICKS;
+        if (!external_calibration_) {
+            yaw_dps_offset_ = yaw_dps_sum_ / LEVEL_SAMPLE_TICKS;
+        }
         reset_motion();
         pitch_ = pitch_dps_ = 0;
         enter(State::BALANCING);

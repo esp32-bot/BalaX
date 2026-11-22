@@ -4,13 +4,15 @@
 #include "esp_console.h"
 #include "esp_err.h"
 #include "esp_pm.h"
+#include "imu_calibration.h"
+#include "lan_server.h"
 #include "nvs_flash.h"
-#include "ota.h"
 #include "remote.h"
 #include "robot.h"
 #include "settings.h"
 #include "sounds.h"
 #include "status.h"
+#include "telemetry_stream.h"
 #include "wifi.h"
 #include "wifi_networks.h"
 
@@ -36,11 +38,11 @@ void start_console() {
     repl_config.prompt = CONSOLE_PROMPT;
     repl_config.task_stack_size = CONSOLE_STACK_BYTES;
     repl_config.task_priority = CONSOLE_PRIORITY;
+    repl_config.task_core_id = CONSOLE_CORE;
     esp_console_dev_uart_config_t uart_config = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
 
     ESP_ERROR_CHECK(esp_console_register_help_command());
     ESP_ERROR_CHECK(settings::register_commands());
-    ESP_ERROR_CHECK(ota::register_commands("https://esp32-bot.github.io/BalaX/fw", "balax.bin"));
     ESP_ERROR_CHECK(register_app_commands());
     esp_console_repl_t* repl = nullptr;
     ESP_ERROR_CHECK(esp_console_new_repl_uart(&uart_config, &repl_config, &repl));
@@ -58,11 +60,16 @@ extern "C" void app_main() {
     };
     ESP_ERROR_CHECK(esp_pm_configure(&pm));
     ESP_ERROR_CHECK(init_board());
-    ESP_ERROR_CHECK(settings::load_all());  // applies volume, brightness and the gains
-    ESP_ERROR_CHECK(robot::start());          // calibrates first, so lying still from the start helps
+    ESP_ERROR_CHECK(settings::load_all());  // applies volume, brightness, gains & saved IMU calibration
+    ESP_ERROR_CHECK(robot::start());
+    // Only calibrate once on a fresh flash; future reboots use the saved NVS offsets immediately.
+    if (!imu_cal::is_calibrated()) {
+        robot::zero_imu();
+    }
     board.speaker.play(STARTUP_MELODY);
     ESP_ERROR_CHECK(wifi::start(may_scan_for_networks));
-    ESP_ERROR_CHECK(ota::start_lan_server(LAN_AUTH_KEY));
+    lan_server::set_stream_callback(telemetry_stream::pull_compressed);
+    ESP_ERROR_CHECK(lan_server::start(LAN_AUTH_KEY));
     ESP_ERROR_CHECK(remote::start());
     ESP_ERROR_CHECK(start_status_screen());
     start_console();

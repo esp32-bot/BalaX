@@ -1,9 +1,12 @@
 idf_component_register(
-    SRCS "main.cpp" "board.cpp" "app_settings.cpp" "gain_settings.cpp" "status.cpp" "status_view.cpp"
-         "cpu_stats.cpp" "commands.cpp" "balance.cpp" "robot.cpp" "remote_protocol.cpp" "remote.cpp" "wifi.cpp"
+    SRCS "main.cpp" "board.cpp" "app_settings.cpp" "gain_settings.cpp" "imu_calibration.cpp"
+         "status.cpp" "status_view.cpp" "cpu_stats.cpp" "commands.cpp" "balance.cpp"
+         "robot.cpp" "telemetry_stream.cpp" "remote_protocol.cpp" "remote.cpp" "wifi.cpp"
+         "prog_vm.cpp" "lan_server.cpp"
     INCLUDE_DIRS "."
-    PRIV_REQUIRES m5stickc_plus balac gfx settings ota console console_commands esp_pm esp_timer esp_hw_support
-                  nvs_flash esp_wifi esp_netif esp_event
+    PRIV_REQUIRES m5stickc_plus balac gfx settings console console_commands esp_pm esp_timer esp_hw_support
+                  nvs_flash esp_wifi esp_netif esp_event spi_flash esp_http_server app_update
+                  bootloader_support esp_partition
                   espcoredump  # nothing calls it, but the minimal build leaves out what isn't required
     # Settings register themselves and nothing refers to them by name, so without this the
     # linker would leave them out.

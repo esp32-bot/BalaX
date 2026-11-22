@@ -13,7 +13,6 @@
 #include <zlib.h>
 
 #include "battery_soc.h"
-#include "gfx/canvas.h"
 #include "m5stickc_plus/screen.h"
 #include "status_view.h"
 
@@ -31,7 +30,7 @@ status::Values charging() {
     v.battery_ma = 83;
     v.usb_v = 5.10f;
     v.usb_ma = 120;
-    v.cpu_mhz = 77;
+    v.cpu_mhz = 80;
     v.cpu0_load = 0.3f;
     v.cpu1_load = 0;
     v.ram_used_kb = 92;
@@ -59,7 +58,7 @@ status::Values on_battery() {
     v.battery_ma = -65;
     v.usb_v = 0;
     v.usb_ma = 0;
-    v.cpu_mhz = 240;
+    v.cpu_mhz = 80;
     v.cpu0_load = 35.2f;
     v.cpu1_load = 88.4f;
     v.ram_used_kb = 231;
@@ -145,7 +144,19 @@ int main(int argc, char** argv) {
         fprintf(stderr, "usage: %s out.png\n", argv[0]);
         return 2;
     }
-    status::Values states[] = {charging(), on_battery(), low_and_failing()};
+    status::Values boot;
+    status::Values ready = charging();
+    status::Values balance = on_battery();
+    status::Values fallen = low_and_failing();
+    for (status::Values* values : {&ready, &balance, &fallen}) {
+        values->battery_pct = battery::percent(values->battery_v, values->battery_ma);
+    }
+    const status::ScreenValues states[] = {
+        {boot},
+        {ready, -18, 0},
+        {balance, 1.3f, 12, 250, 6, 3},
+        {fallen, 26, -25, 250, 6, 3},
+    };
     const int count = std::size(states);
     const int cell_w = m5::SCREEN_WIDTH + 2 * GAP;
     const int cell_h = m5::SCREEN_HEIGHT + 2 * GAP;
@@ -157,10 +168,8 @@ int main(int argc, char** argv) {
     }
 
     std::vector<uint16_t> frame(m5::SCREEN_WIDTH * m5::SCREEN_HEIGHT);
-    for (int index = 0; status::Values& values : states) {
-        values.battery_pct = battery::percent(values.battery_v, values.battery_ma);
-        gfx::Canvas canvas(frame, m5::SCREEN_WIDTH, m5::SCREEN_HEIGHT);
-        status::draw(canvas, values);
+    for (int index = 0; const status::ScreenValues& values : states) {
+        status::draw(frame, 0, values);
         const int left = (index++ * cell_w + GAP) * SCALE;
         for (int y = 0; y < m5::SCREEN_HEIGHT * SCALE; ++y) {
             for (int x = 0; x < m5::SCREEN_WIDTH * SCALE; ++x) {

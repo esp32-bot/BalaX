@@ -7,10 +7,10 @@
 #include "freertos/FreeRTOS.h"
 #include "sdkconfig.h"
 
-// The CPU idles at 80 MHz, the lowest speed that keeps the 80 MHz APB clock (and with it
-// the PWM and bus clocks) steady, and speeds up while a task holds a power-management lock.
+// Run at 80 MHz (the lowest speed that keeps the 80 MHz APB clock for Wi-Fi, SPI, PWM & I2C)
+// to minimize heat inside the sealed M5StickC Plus enclosure and protect the internal LiPo battery.
 constexpr int CPU_MIN_MHZ = 80;
-constexpr int CPU_MAX_MHZ = 240;
+constexpr int CPU_MAX_MHZ = 80;
 
 // Setting defaults, until a value is saved on the robot: main/Kconfig.projbuild, overridden
 // for one robot in sdkconfig.local.
@@ -21,6 +21,14 @@ constexpr uint8_t DEFAULT_BRIGHTNESS = CONFIG_BALAX_DEFAULT_BRIGHTNESS;
 constexpr char CONSOLE_PROMPT[] = "balax>";  // the console adds a space; tools/console.py waits for it
 constexpr uint32_t CONSOLE_STACK_BYTES = 4096;
 constexpr UBaseType_t CONSOLE_PRIORITY = 2;
+constexpr BaseType_t CONSOLE_CORE = 0;  // commands print floats; see "Cores" below
+
+// Cores: the balance loop has core 1 to itself (ROBOT_CORE); everything else stays on core 0
+// with Wi-Fi. A task that uses the FPU (floats) gets pinned to the core it first does so on,
+// so a task that floats free can end up on core 1 for good: only integer-only helpers float
+// free (the mDNS responder in lan_server.cpp, the speaker, the OTA reboot timers). Core 0's
+// tick interrupt is also what wakes the balance loop, so nothing may mask interrupts there
+// for long (lan_server.cpp's log ring copies with memcpy for that reason).
 
 // Status screen: a diagram of the robot's parts with their readings; the layout is in
 // status_layout.h. It checks on the robot every STATUS_POLL_MS and reads everything else
@@ -33,7 +41,7 @@ constexpr BaseType_t STATUS_CORE = 0;  // pinned, as the CPU speed comes from a 
 
 // Control loop (robot.cpp): every balance::TICK_S, alone on the second core and above every
 // other task there.
-constexpr uint32_t ROBOT_STACK_BYTES = 4096;
+constexpr uint32_t ROBOT_STACK_BYTES = 6144;
 constexpr UBaseType_t ROBOT_PRIORITY = 20;
 constexpr BaseType_t ROBOT_CORE = 1;
 constexpr UBaseType_t ROBOT_REQUEST_QUEUE = 4;
