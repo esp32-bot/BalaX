@@ -1,0 +1,32 @@
+{
+  "name": "BalaX (dev)",
+  "version": "c5bb13b",
+  "channel": "dev",
+  "built_at": "2026-11-22T06:16:50.569300+00:00",
+  "ota_url": "fw/dev/balax.bin",
+  "ota_sha256": "91a8d2680e340f1868343430fddd9e55d5b6d967b89ce09f299309bfc645e736",
+  "new_install_prompt_erase": false,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        {
+          "path": "bootloader.bin",
+          "offset": 4096
+        },
+        {
+          "path": "partition-table.bin",
+          "offset": 32768
+        },
+        {
+          "path": "ota_data_initial.bin",
+          "offset": 61440
+        },
+        {
+          "path": "balax.bin",
+          "offset": 131072
+        }
+      ]
+    }
+  ]
+}
