@@ -1,24 +1,47 @@
-###### READMEv1.0 <br/> Made with ❤️ by [Felipe Galindo](https://felipegalind0.github.io)
+# BalaX: BalaC balancing robot
 
+Firmware for a self-balancing robot: an M5StickC Plus (ESP32-PICO-D4, MPU6886 IMU, AXP192
+power chip) on an M5Stack BalaC base. Native ESP-IDF C++, no Arduino. Remote control comes
+from a [JoyX](https://github.com/Felipegalind0/JoyX) over ESP-NOW.
 
-# MARIN: BalaC balancing robot (IMU:MPU6886)
+The Arduino/PlatformIO firmware is on the `arduino` branch.
 
+## Use
 
+1. Lay the robot flat and power on. It calibrates the gyro (screen: CALIBRATING).
+2. Stand it up and hold it still until it has measured upright (LEVELING).
+3. READY: press button A (or `ARM` from the remote) to arm. It balances once stood up.
+4. After a fall (FALLEN, with an alarm) press A to acknowledge. A again to re-arm.
 
-### Robot Setup instructions:
+Power button: short press restarts, long press powers off (motors stop, melody plays).
 
-1. Lay the robot flat, and power on.
-2. Wait until Gal-1 (Pitch Gyro calibration) completes.
-3. Hold still the robot upright in balance until Cal-2 (Accel & Yaw Gyro cal)
-completes.
+## Develop
 
-**short push of power button**: Gyro calibration
+```
+tools/bx build | flash | run | monitor | test | preview | cmd <command>...
+```
 
-**long push (>1sec) of power button**: switch mode between standig and
-demo(circle)
+Needs ESP-IDF v6.1.1 at `~/esp/v6.1.1/esp-idf`. `tools/bx test` runs the C++ tests (clang,
+on the laptop) and the Python ones. `tools/bx preview` renders the status screen to
+`host/build/preview.png`. Anything that can be tested without the robot lives in plain C++
+headers/sources (`balance`, `remote_protocol`, `status_*`) and is built for the laptop too.
 
-#### Based on [https://github.com/m5stack/M5-ProductExampleCodes/blob/master/App/BalaC/Arduino/Balac/Balac.ino](https://github.com/m5stack/M5-ProductExampleCodes/blob/master/App/BalaC/Arduino/Balac/Balac.ino)
+Console commands (`tools/bx cmd status`): `status`, `arm`, `disarm`, `takeoff`, `beep`,
+`play`, `reboot`, plus `get`/`set`/`save` for settings (volume, brightness and all 16
+balance gains, each with a range).
 
-uses a JoyC with this firmware as a remote https://github.com/Felipegalind0/JoyX
+### Wi-Fi
 
-Microcontroller-powered Autonomous Real-time
+The robot always runs its own access point and joins the first known network in range.
+Credentials go in `secrets/wifi.json` (gitignored, never commit; this repo is public):
+
+```
+tools/wifi.py add-current   # this laptop's network (asks for Keychain access)
+tools/wifi.py add | remove | list | ap
+tools/bx build && tools/bx flash
+```
+
+`tools/wifi.py` writes a header into `build/` that the firmware includes.
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how it is put together and
+[docs/HARDWARE.md](docs/HARDWARE.md) for the hardware and protocol facts.

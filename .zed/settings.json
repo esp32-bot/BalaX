@@ -1,0 +1,14 @@
+{
+  "lsp": {
+    "clangd": {
+      "binary": {
+        "path": "/Users/felg/.espressif/tools/esp-clangd/esp-21.1.3_20260408/esp-clangd/bin/clangd",
+        "arguments": [
+          "--compile-commands-dir=build",
+          "--background-index",
+          "--clang-tidy"
+        ]
+      }
+    }
+  }
+}

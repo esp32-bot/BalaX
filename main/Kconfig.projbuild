@@ -1,0 +1,20 @@
+menu "BalaX"
+
+    # Defaults for the runtime settings, used until a value is saved on the robot. Override
+    # them for one robot in sdkconfig.local.
+
+    config BALAX_DEFAULT_VOLUME
+        int "Buzzer volume"
+        range 0 100
+        default 100
+        help
+            0 mutes; 10 steps = 6 dB.
+
+    config BALAX_DEFAULT_BRIGHTNESS
+        int "Screen brightness"
+        range 0 100
+        default 50
+        help
+            0 turns the backlight off.
+
+endmenu

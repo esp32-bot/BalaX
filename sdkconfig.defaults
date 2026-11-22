@@ -1,0 +1,26 @@
+# The source of truth for the build configuration; sdkconfig is generated from it.
+# One robot's own settings go in sdkconfig.local (gitignored), e.g. CONFIG_BALAX_DEFAULT_VOLUME=70.
+
+# M5StickC Plus: ESP32-PICO-D4 rev v1.0, 4 MB flash
+CONFIG_IDF_TARGET="esp32"
+CONFIG_ESP32_REV_MIN_1=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Speed
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+
+# Scale the CPU between 80 and 240 MHz on demand (configured in main.cpp)
+CONFIG_PM_ENABLE=y
+# Time spent in each task, for the CPU load on the status screen
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+
+# Quieter, faster boot
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+
+# Save a core dump to flash on a crash; read it with `idf.py coredump-info`
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y

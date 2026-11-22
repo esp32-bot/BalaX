@@ -1,0 +1,58 @@
+[
+  {
+    "label": "bx: gui (BalaX Studio)",
+    "command": "tools/bx gui",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "always"
+  },
+  {
+    "label": "bx: build",
+    "command": "tools/bx build",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "always"
+  },
+  {
+    "label": "bx: flash",
+    "command": "tools/bx flash",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "always"
+  },
+  {
+    "label": "bx: run (flash + monitor)",
+    "command": "tools/bx run",
+    "use_new_terminal": true,
+    "allow_concurrent_runs": false,
+    "reveal": "always"
+  },
+  {
+    "label": "bx: monitor",
+    "command": "tools/bx monitor",
+    "use_new_terminal": true,
+    "allow_concurrent_runs": false,
+    "reveal": "always"
+  },
+  {
+    "label": "bx: test",
+    "command": "tools/bx test",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "always"
+  },
+  {
+    "label": "bx: preview status screen",
+    "command": "tools/bx preview",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "always"
+  },
+  {
+    "label": "bx: cmd status",
+    "command": "tools/bx cmd status",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "always"
+  }
+]
