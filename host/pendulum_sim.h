@@ -35,6 +35,7 @@ struct Surface {
 };
 
 struct Result {
+    bool entered_balancing = false;  // the arm/level phase reached BALANCING before the run began
     bool fell = false;
     bool stood_up = false;
     float rms_pitch_deg = 0.0f;
@@ -183,6 +184,8 @@ inline Result run_balance_scenario(const Surface& surf, const control::Config& c
     }
 
     Result res{};
+    // A controller that never arms can't fall either, so tests check this before trusting !fell.
+    res.entered_balancing = robot.state() == balance::State::BALANCING;
     const int total_ticks = static_cast<int>(duration_s * balance::TICKS_PER_S);
     const int half_ticks = total_ticks / 2;
     const int push_tick = push_at_s > 0.0f ? static_cast<int>(push_at_s * balance::TICKS_PER_S) : -1;
@@ -299,6 +302,7 @@ inline Result run_drive_scenario(const Surface& surf, const control::Config& cfg
     }
 
     Result res{};
+    res.entered_balancing = robot.state() == balance::State::BALANCING;
     const int total_ticks = static_cast<int>(duration_s * balance::TICKS_PER_S);
     const int start_t = static_cast<int>(drive_start_s * balance::TICKS_PER_S);
     const int end_t = static_cast<int>(drive_end_s * balance::TICKS_PER_S);

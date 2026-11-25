@@ -20,6 +20,8 @@
 #   balax erase                      wipe the robot's flash, settings included
 #   balax dist [stable|dev]          package firmware into web/fw/<channel>/ for OTA
 #   balax preview                    render the status screen to host/build/preview.png
+#   balax frames [verify|write-goldens|dump|hashes]  check the status screen against host/goldens/
+#   balax live [wasm|native|bx-preview]  live status screen preview, rebuilt on save (127.0.0.1:8790)
 #   balax idf <args>...              any idf.py command, with ESP-IDF set up
 #
 # BX_PORT picks the USB serial port; BX_IP picks the default LAN host (default: balax.local).
@@ -46,7 +48,7 @@ PINNED_IDF="$HOME/esp/$IDF_VERSION/esp-idf"
 FLASH_BAUD="${BX_BAUD:-1500000}"  # the M5StickC Plus USB chip's fastest reliable rate
 
 usage() {
-  sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # Non-interactive callers (e.g. Zed ACP / CI / pipes) freeze or bloat if flooded with
@@ -292,6 +294,22 @@ preview() {
   echo "$HOST_BUILD/preview.png"
 }
 
+# Incremental CMake/Ninja build of the frames CLI (host/CMakeLists.txt), then runs it. It prints
+# one JSON line; exit 0 pass, 1 a frame differs, 2 bad arguments, 4 a reference frame is missing.
+frames_cli() {
+  local dir="$HOST_BUILD/live-native" log="$HOST_BUILD/frames-build.log"
+  mkdir -p "$HOST_BUILD"
+  if [[ ! -f "$dir/build.ninja" ]] && ! cmake -S "$REPO/host" -B "$dir" -G Ninja >"$log" 2>&1; then
+    strip_ansi <"$log" | tail -n 40 >&2
+    return 4
+  fi
+  if ! ninja -C "$dir" frames >"$log" 2>&1; then
+    strip_ansi <"$log" | tail -n 40 >&2
+    return 1
+  fi
+  "$dir/frames" "${@:-verify}"
+}
+
 # Flash and monitor through the environment, not -p/-b: a -b would also set the monitor's
 # baud rate, which has to stay at the console's.
 with_robot() {
@@ -336,6 +354,8 @@ case "$command" in
   dist)        python3 "$TOOLS_DIR/dist.py" --channel "${1:-dev}" ;;
   test)        host_tests; "$(idf_python)" -B -m unittest discover -s "$TOOLS_DIR" "$@" ;;
   preview)     preview ;;
+  frames)      frames_cli "$@" ;;
+  live)        node "$REPO/host/live/serve.mjs" --mode "${1:-wasm}" "${@:2}" ;;
   ""|help|-h|--help) usage ;;
   *)           usage >&2; exit 1 ;;
 esac

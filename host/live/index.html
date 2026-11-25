@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BalaX status screen · live preview</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header>
+    <h1>BalaX status screen</h1>
+    <span id="mode" class="chip"></span>
+    <span id="gen" class="chip">waiting for a build</span>
+    <span id="watched" class="chip"></span>
+    <label class="toggle"><input type="checkbox" id="diff"> Diff against reference</label>
+  </header>
+  <p id="summary"></p>
+  <section id="attitude" hidden>
+    <label>Fixture <select id="attitude-fixture"></select></label>
+    <label>Pitch <input type="range" id="pitch" min="-60" max="60" step="0.25"> <output id="pitch-out"></output></label>
+    <label>Roll <input type="range" id="roll" min="-45" max="45" step="0.25"> <output id="roll-out"></output></label>
+    <button id="reset" type="button">Reset</button>
+  </section>
+  <section id="error" hidden>
+    <strong id="error-title"></strong>
+    <pre id="error-log"></pre>
+  </section>
+  <main id="screens"></main>
+</body>
+</html>
