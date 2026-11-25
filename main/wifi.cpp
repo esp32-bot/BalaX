@@ -1,6 +1,7 @@
 #include "wifi.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <iterator>
 #include <string_view>
@@ -28,9 +29,14 @@ bool (*may_scan)() = nullptr;
 esp_timer_handle_t retry_timer = nullptr;
 uint32_t retry_ms = WIFI_RETRY_MIN_MS;  // only touched from the event and timer tasks, one at a time
 char ap_ssid[sizeof Status::ssid];
+std::atomic<bool> sleep_ps_enabled{false};
 
 portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 Status shared;  // guarded by `lock`
+
+wifi_ps_type_t sta_ps_mode() {
+    return sleep_ps_enabled.load(std::memory_order_acquire) ? WIFI_PS_MAX_MODEM : WIFI_PS_MIN_MODEM;
+}
 
 template <size_t N>
 size_t copy(uint8_t (&out)[N], std::string_view text) {
@@ -74,11 +80,11 @@ void set_access_point_enabled(bool enabled) {
             }
             // In pure STA mode, modem-sleep drops idle Wi-Fi radio current by ~45-55 mA (~200 mW less heat);
             // softAP requires WIFI_PS_NONE so beacons stay on schedule.
-            esp_wifi_set_ps(enabled ? WIFI_PS_NONE : WIFI_PS_MIN_MODEM);
+            esp_wifi_set_ps(enabled ? WIFI_PS_NONE : sta_ps_mode());
             ESP_LOGI(TAG, "softAP %s", enabled ? "enabled (no Wi-Fi)" : "disabled (connected to Wi-Fi, modem-sleep on)");
         }
     } else {
-        esp_wifi_set_ps(enabled ? WIFI_PS_NONE : WIFI_PS_MIN_MODEM);
+        esp_wifi_set_ps(enabled ? WIFI_PS_NONE : sta_ps_mode());
     }
     update([=](Status& s) {
         s.ap_ssid = enabled ? ap_ssid : "off";
@@ -134,6 +140,7 @@ void connect_to_best() {
     config.sta.bssid_set = true;
     memcpy(config.sta.bssid, chosen.bssid, sizeof config.sta.bssid);
     config.sta.channel = chosen.primary;
+    config.sta.listen_interval = WIFI_SLEEP_LISTEN_INTERVAL;
     config.sta.threshold.authmode = network.password.empty() ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
     config.sta.pmf_cfg.capable = true;
     enter(Phase::JOINING);
@@ -248,7 +255,7 @@ esp_err_t start(bool (*may_scan_now)()) {
     }
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "start");
     ESP_RETURN_ON_ERROR(esp_wifi_set_max_tx_power(WIFI_MAX_TX_QDBM), TAG, "tx power");
-    ESP_RETURN_ON_ERROR(esp_wifi_set_ps(start_with_ap ? WIFI_PS_NONE : WIFI_PS_MIN_MODEM), TAG, "power save");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_ps(start_with_ap ? WIFI_PS_NONE : sta_ps_mode()), TAG, "power save");
     update([=](Status& s) {
         s.ap_ssid = start_with_ap ? ap_ssid : "off";
         if (!WIFI_NETWORKS.empty()) {
@@ -256,6 +263,14 @@ esp_err_t start(bool (*may_scan_now)()) {
         }
     });
     return ESP_OK;
+}
+
+void set_sleep_mode(bool sleep) {
+    sleep_ps_enabled.store(sleep, std::memory_order_release);
+    wifi_mode_t mode = WIFI_MODE_NULL;
+    if (esp_wifi_get_mode(&mode) == ESP_OK && mode == WIFI_MODE_STA) {
+        esp_wifi_set_ps(sta_ps_mode());
+    }
 }
 
 Status status() {

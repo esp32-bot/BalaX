@@ -8,6 +8,7 @@
 
 #include <iterator>
 
+#include "app_settings.h"
 #include "board.h"
 #include "console_commands.h"
 #include "esp_app_desc.h"
@@ -17,8 +18,11 @@
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "esp_system.h"
+#include "idle_power.h"
 #include "spi_flash_mmap.h"
 #include "imu_calibration.h"
+#include "control_settings.h"
+#include "power_mode.h"
 #include "prog_vm.h"
 #include "robot.h"
 #include "sounds.h"
@@ -46,6 +50,15 @@ bool parse_float(const char* text, float& out) {
     return true;
 }
 
+bool has_force_flag(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "force") == 0 || strcmp(argv[i], "--force") == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 int status_command(int argc, char** argv) {
     if (argc > 1) {
         return print_probe(argc, argv);
@@ -56,6 +69,85 @@ int status_command(int argc, char** argv) {
 
 int probe_command(int argc, char** argv) {
     return print_probe(argc, argv);
+}
+
+
+int ctrl_command(int argc, char** argv) {
+    if (argc >= 2 && strcmp(argv[1], "classic") == 0) {
+        control_settings::apply_preset(false);
+        printf("Control preset: classic (all 5 modules = 0). Run 'save' to persist.\n");
+        return 0;
+    }
+    if (argc >= 2 && strcmp(argv[1], "sota") == 0) {
+        control_settings::apply_preset(true);
+        printf("Control preset: sota (est=vqf_6dof ctrl=lqr_eso perch=lyapunov shaper=smooth_stiction takeoff=energy_swingup). Run 'save' to persist.\n");
+        return 0;
+    }
+    if (argc >= 3) {
+        const int mode = atoi(argv[2]) ? 1 : 0;
+        if (!control_settings::set_stage(argv[1], mode)) {
+            printf("Unknown stage '%s'. Use: est, ctrl, perch, shaper, takeoff (0 or 1), or classic/sota.\n", argv[1]);
+            return 1;
+        }
+        printf("Set %s = %d (live in RAM; run 'save' to persist).\n", argv[1], mode);
+    }
+    const auto cfg = control_settings::current();
+    const auto t = robot::telemetry();
+    printf("est       %d (%s)\n", static_cast<int>(cfg.estimator_mode()), control::name(cfg.estimator_mode()).data());
+    printf("ctrl      %d (%s)\n", static_cast<int>(cfg.controller_mode()), control::name(cfg.controller_mode()).data());
+    printf("perch     %d (%s)\n", static_cast<int>(cfg.perch_mode()), control::name(cfg.perch_mode()).data());
+    printf("shaper    %d (%s)\n", static_cast<int>(cfg.shaper_mode()), control::name(cfg.shaper_mode()).data());
+    printf("takeoff   %d (%s)\n", static_cast<int>(cfg.takeoff_mode()), control::name(cfg.takeoff_mode()).data());
+    printf("perched   %s (perch_pct=%.1f%% duty=%.1f%% energy=%.1f eq_deg=%.2f)\n",
+           t.terms.perched ? "yes" : "no", t.terms.perch_pct, t.terms.duty_pct, t.terms.energy_u2, t.terms.eq_deg);
+    return 0;
+}
+
+int power_command(int, char**) {
+    const float usb_v = board.pmic.usb_v();
+    const float usb_ma = board.pmic.usb_ma();
+    const float pmic_c = board.pmic.temperature_c();
+    const float bat_v = board.pmic.battery_v();
+    const float bat_ma = board.pmic.battery_ma();
+    const bool usb = idle_power::usb_present(usb_v);
+    printf("%-13s %s\n", "power_mode", idle_power::name(power_mode::current()));
+    printf("%-13s %s\n", "usb_plugged", usb ? "yes" : "no");
+    printf("%-13s %.2f\n", "usb_v", usb_v);
+    printf("%-13s %.0f\n", "usb_ma", usb_ma);
+    printf("%-13s %.1f\n", "pmic_c", pmic_c);
+    printf("%-13s %.2f\n", "battery_v", bat_v);
+    printf("%-13s %.0f\n", "battery_ma", bat_ma);
+    printf("%-13s %lld\n", "idle_s", static_cast<long long>(power_mode::idle_seconds()));
+    printf("%-13s %u\n", "idle_sleep_s", static_cast<unsigned>(idle_sleep_s.get()));
+    return 0;
+}
+
+int sleep_command(int argc, char** argv) {
+    const bool force = has_force_flag(argc, argv);
+    const idle_power::GuardResult res = power_mode::enter_sleep(force);
+    if (!res.ok) {
+        printf("%s\n", res.reason);
+        return 1;
+    }
+    printf("Entered wifi-sleep (WIFI_PS_MAX_MODEM + light sleep, faint 4s LED pulse). Run 'wake' or press Button A to resume.\n");
+    return 0;
+}
+
+int wake_command(int, char**) {
+    power_mode::wake();
+    printf("Awake (80 MHz, 100 Hz balance loop active).\n");
+    return 0;
+}
+
+int off_command(int argc, char** argv) {
+    const bool force = has_force_flag(argc, argv);
+    const idle_power::GuardResult res = power_mode::enter_off(force);
+    if (!res.ok) {
+        printf("%s\n", res.reason);
+        return 1;
+    }
+    printf("Entering usb-sleep (deep sleep, ultra-dim 10s LED pulse; auto-switches to wifi-sleep if USB unplugged). Wake via USB EN or Button A.\n");
+    return 0;
 }
 
 int prog_command(int argc, char** argv) {
@@ -74,6 +166,10 @@ int prog_command(int argc, char** argv) {
 }
 
 int imu_command(int argc, char** argv) {
+    if (argc >= 2 && (strcmp(argv[1], "zero") == 0 || strcmp(argv[1], "heading") == 0 ||
+                      strcmp(argv[1], "accel") == 0 || strcmp(argv[1], "cg") == 0)) {
+        power_mode::wake();
+    }
     if (argc == 2 && strcmp(argv[1], "zero") == 0) {
         const robot::ZeroImuResult r = robot::zero_imu();
         if (r.ok) {
@@ -309,6 +405,7 @@ int beep_command(int argc, char** argv) {
         printf("Usage: beep [hz] [ms]\n");
         return 1;
     }
+    power_mode::wake();
     board.speaker.play(note);
     return 0;
 }
@@ -316,6 +413,7 @@ int beep_command(int argc, char** argv) {
 int play_command(int argc, char** argv) {
     for (const Melody& melody : MELODIES) {
         if (argc == 2 && melody.name == argv[1]) {
+            power_mode::wake();
             board.speaker.play(melody.notes);
             return 0;
         }
@@ -332,8 +430,36 @@ int reboot_command(int, char**) {
     esp_restart();
 }
 
+int drive_command(int argc, char** argv) {
+    if (argc != 3) {
+        printf("Usage: drive <forward -1..1> <turn -1..1>\n");
+        return 1;
+    }
+    char* end1 = nullptr;
+    char* end2 = nullptr;
+    const float fwd = std::strtof(argv[1], &end1);
+    const float turn = std::strtof(argv[2], &end2);
+    if (!end1 || end1 == argv[1] || !end2 || end2 == argv[2] || !std::isfinite(fwd) || !std::isfinite(turn)) {
+        printf("Usage: drive <forward -1..1> <turn -1..1>\n");
+        return 1;
+    }
+    const float cf = std::clamp(fwd, -1.0f, 1.0f);
+    const float ct = std::clamp(turn, -1.0f, 1.0f);
+    if (std::abs(cf) > 0.01f || std::abs(ct) > 0.01f) {
+        power_mode::note_activity();
+    }
+    robot::steer(cf, ct);
+    printf("drive %.2f %.2f\n", cf, ct);
+    return 0;
+}
+
 template <balance::Request REQUEST>
 int request_command(int, char**) {
+    if constexpr (REQUEST != balance::Request::DISARM) {
+        power_mode::wake();
+    } else {
+        power_mode::note_activity();
+    }
     robot::request(REQUEST);
     return 0;
 }
@@ -344,6 +470,13 @@ esp_err_t register_app_commands() {
     static constexpr console_commands::Command COMMANDS[] = {
         {"status", "[field...]", "Print every reading (or specific fields): power, CPU, memory, balancing, Wi-Fi.", status_command},
         {"probe", "[field...|list]", "Query one or more live readings by name (e.g. `probe cpu_mhz cpu0_load pmic_c`), or `list`.", probe_command},
+        {"ctrl", "[classic|sota|<stage> <0|1>]", "Inspect or hot-swap the 5 modular control stages (est/ctrl/perch/shaper/takeoff).", ctrl_command},
+        {"power", nullptr, "Print power mode (awake/wifi-sleep/usb-sleep), USB presence, temps, and idle timer.", power_command},
+        {"wifi-sleep", "[force]", "Enter Wi-Fi low-power sleep (WIFI_PS_MAX_MODEM + light sleep, faint 4s LED pulse).", sleep_command},
+        {"sleep", "[force]", "Alias for wifi-sleep.", sleep_command},
+        {"wake", nullptr, "Wake from wifi-sleep back to active 100 Hz mode.", wake_command},
+        {"usb-sleep", "[force]", "Enter USB-charge deep sleep (ultra-dim 10s LED pulse; auto-switches to wifi-sleep on unplug).", off_command},
+        {"off", "[force]", "Alias for usb-sleep.", off_command},
         {"prog", "[status|stop|clear]", "Inspect, stop, or clear DRAM cache for the sandboxed mini-program VM.", prog_command},
         {"imu", "[zero|heading|accel|cg|status]", "Zero/calibrate 6-axis IMU & CG lever-arm to flash, or inspect status.", imu_command},
         {"stream", "[stop]", "Print compressed telemetry stream queue stats (RAM/flash spillover), or stop.", stream_command},
@@ -353,6 +486,7 @@ esp_err_t register_app_commands() {
         {"disarm", nullptr, "Disarm: motors off. Also acknowledges a fall.", request_command<balance::Request::DISARM>},
         {"takeoff", nullptr, "Lying down: drive full power to pop up, then balance.",
          request_command<balance::Request::TAKEOFF>},
+        {"drive", "<fwd> <turn>", "Steer the balancing robot (-1..1 forward, -1..1 turn).", drive_command},
         {"beep", "[hz] [ms]", "Play a tone, to try the volume.", beep_command},
         {"play", "<name>", "Play a melody.", play_command},
         {"reboot", nullptr, "Restart the robot.", reboot_command},

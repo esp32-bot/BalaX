@@ -22,7 +22,7 @@ tools/bx build | flash | run | monitor | test | preview | cmd <command>...
 ```
 
 Needs ESP-IDF v6.1.1 at `~/esp/v6.1.1/esp-idf` and the [shared ESP32 tools
-repository](https://github.com/esp32-bot/tools) checked out beside BalaX as `../tools`.
+repository](https://github.com/esp32-tools/tools) checked out at `~/gh/esp32-tools/tools`.
 `tools/bx test` runs the C++ tests (clang,
 on the laptop) and the Python ones. `tools/bx preview` renders the status screen to
 `host/build/preview.png`. Anything that can be tested without the robot lives in plain C++

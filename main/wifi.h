@@ -17,6 +17,9 @@ namespace wifi {
 
 esp_err_t start(bool (*may_scan)());
 
+// Switches pure-STA Wi-Fi power save between WIFI_PS_MAX_MODEM (sleep) and WIFI_PS_MIN_MODEM (awake).
+void set_sleep_mode(bool sleep);
+
 enum class Phase : uint8_t {
     NO_NETWORKS,  // none set up
     SEARCHING,

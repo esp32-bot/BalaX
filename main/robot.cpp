@@ -12,9 +12,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "control_settings.h"
 #include "gain_settings.h"
 #include "imu_calibration.h"
 #include "imu_fusion.h"
+#include "power_mode.h"
 #include "sounds.h"
 #include "telemetry_stream.h"
 
@@ -35,6 +37,7 @@ struct Stick {
 };
 
 QueueHandle_t requests;
+TaskHandle_t robot_task_handle = nullptr;
 portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 // Guarded by `lock`.
 Stick stick;
@@ -45,6 +48,8 @@ uint32_t raw_seq = 0;
 std::atomic<bool> pending_apply_saved_cal{false};
 std::atomic<bool> pending_reset_fusion{false};
 std::atomic<bool> pending_reset_heading{false};
+std::atomic<bool> sleep_requested{false};
+std::atomic<bool> sleeping_ack{false};
 
 // The robot's axes from the IMU's, as the Arduino firmware mapped them.
 balance::Imu to_robot(const m5::Motion& motion) {
@@ -72,6 +77,9 @@ public:
     }
 
     void tick();
+    void enter_sleep();
+    void poll_while_sleeping();
+    void exit_sleep();
     void overran() { ++overruns_; }
 
 private:
@@ -82,12 +90,13 @@ private:
     void show_state();
     void check_power_button();
     void shut_down();
-    void publish(uint32_t tick_us);
+    void publish(int64_t started_at_us);
 
     balance::Robot robot_;
     imu_fusion::ImuFusion6Dof fusion_{static_cast<float>(balance::TICKS_PER_S)};
     m5::Motion motion_{};
     int failed_reads_ = 0;
+    int64_t stationary_since_us_ = 0;
     uint32_t ticks_ = 0;
     int alarm_ticks_ = 0;
     Shutdown shutdown_ = Shutdown::NONE;
@@ -114,7 +123,43 @@ void Loop::tick() {
     if (shutdown_ != Shutdown::NONE && --shutdown_ticks_ <= 0) {
         shut_down();
     }
-    publish(esp_timer_get_time() - start_us);
+    publish(start_us);
+}
+
+void Loop::enter_sleep() {
+    robot_.request(balance::Request::DISARM);
+    board.motors.set(0, 0);
+    board.led.set(false);
+    board.imu.sleep();
+    taskENTER_CRITICAL(&lock);
+    shared.state = robot_.state();
+    shared.fault = robot_.fault();
+    shared.armed = false;
+    shared.motors_live = false;
+    shared.stationary_since_us = 0;
+    stationary_since_us_ = 0;
+    shared.motors = {};
+    shared.imu_c = NAN;
+    taskEXIT_CRITICAL(&lock);
+    sleeping_ack.store(true, std::memory_order_release);
+}
+
+void Loop::poll_while_sleeping() {
+    if (board.button_a.take_press()) {
+        power_mode::request_wake_from_button();
+    }
+    check_power_button();
+    if (shutdown_ != Shutdown::NONE) {
+        vTaskDelay(pdMS_TO_TICKS(duration_ms(SHUTDOWN_MELODY)));
+        shut_down();
+    }
+}
+
+void Loop::exit_sleep() {
+    board.imu.wake();
+    failed_reads_ = 0;
+    window_max_us_ = 0;
+    sleeping_ack.store(false, std::memory_order_release);
 }
 
 void Loop::take_requests() {
@@ -135,6 +180,7 @@ void Loop::take_requests() {
         }
     }
     if (board.button_a.take_press() && shutdown_ == Shutdown::NONE) {
+        power_mode::note_activity();
         robot_.request(balance::Request::TOGGLE_ARM);
     }
 }
@@ -154,7 +200,14 @@ void Loop::read_imu() {
             motion_.accel_g.x, motion_.accel_g.y, motion_.accel_g.z,
             motion_.gyro_dps.x, motion_.gyro_dps.y, motion_.gyro_dps.z,
             balance::TICK_S);
-        robot_.step(to_robot(motion_), current_gains());
+        balance::Imu sample = to_robot(motion_);
+        const imu_fusion::EulerDeg fused = fusion_.euler_deg();
+        const imu_fusion::Vec3 bias = fusion_.online_bias_dps();
+        sample.has_fused = true;
+        sample.fused_pitch_deg = fused.pitch;
+        sample.fused_pitch_dps = motion_.gyro_dps.x + bias.x;
+        sample.fused_yaw_dps = -motion_.gyro_dps.y - bias.y;
+        robot_.step(sample, current_gains(), control_settings::current());
     } else if (++failed_reads_ >= SENSOR_FAILURE_TICKS) {
         robot_.sensor_failed();
     }
@@ -195,7 +248,8 @@ void Loop::shut_down() {
     esp_restart();  // also if powering off failed, or USB power keeps it on
 }
 
-void Loop::publish(uint32_t tick_us) {
+void Loop::publish(int64_t started_at_us) {
+    const uint32_t tick_us = esp_timer_get_time() - started_at_us;
     window_max_us_ = std::max(window_max_us_, tick_us);
     if (ticks_ % balance::TICKS_PER_S == 0) {
         max_tick_us_ = window_max_us_;
@@ -204,16 +258,27 @@ void Loop::publish(uint32_t tick_us) {
     const balance::Motors motors = robot_.motors();
     const balance::DebugTerms terms = robot_.debug_terms();
     const imu_fusion::EulerDeg fused = fusion_.euler_deg();
+    const imu_fusion::Vec3 bias = fusion_.online_bias_dps();
+    const bool armed = robot_.armed();
+    const bool motors_live = robot_.motors_live();
+    if (armed || motors_live || failed_reads_ != 0 || !fusion_.is_stationary()) {
+        stationary_since_us_ = 0;
+    } else if (stationary_since_us_ == 0) {
+        stationary_since_us_ = started_at_us;
+    }
     const Telemetry telemetry = {
         .state = robot_.state(),
         .fault = robot_.fault(),
-        .armed = robot_.armed(),
-        .motors_live = robot_.motors_live(),
+        .armed = armed,
+        .motors_live = motors_live,
         .base_present = board.motors.present(),
         .pitch_deg = robot_.pitch_deg(),
+        .roll_dps = motion_.gyro_dps.z - bias.z,
         .yaw_dps = robot_.yaw_dps(),
         .fused_deg = fused,
         .imu_resting = fusion_.is_resting(),
+        .stationary_since_us = stationary_since_us_,
+        .sampled_at_us = started_at_us,
         .motors = motors,
         .terms = terms,
         .imu_c = motion_.temperature_c,
@@ -253,6 +318,19 @@ void task(void*) {
     Loop loop;
     TickType_t wake = xTaskGetTickCount();
     for (;;) {
+        if (sleep_requested.load(std::memory_order_acquire)) {
+            loop.enter_sleep();
+            while (sleep_requested.load(std::memory_order_acquire)) {
+                ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+                if (!sleep_requested.load(std::memory_order_acquire)) {
+                    break;
+                }
+                loop.poll_while_sleeping();
+            }
+            loop.exit_sleep();
+            wake = xTaskGetTickCount();
+            continue;
+        }
         loop.tick();
         if (xTaskDelayUntil(&wake, TICK) == pdFALSE) {
             loop.overran();
@@ -268,10 +346,23 @@ esp_err_t start() {
     if (requests == nullptr) {
         return ESP_ERR_NO_MEM;
     }
-    return xTaskCreatePinnedToCore(task, "robot", ROBOT_STACK_BYTES, nullptr, ROBOT_PRIORITY, nullptr, ROBOT_CORE) ==
-                   pdPASS
+    return xTaskCreatePinnedToCore(task, "robot", ROBOT_STACK_BYTES, nullptr, ROBOT_PRIORITY, &robot_task_handle,
+                                   ROBOT_CORE) == pdPASS
                ? ESP_OK
                : ESP_ERR_NO_MEM;
+}
+
+void set_sleeping(bool sleeping) {
+    sleep_requested.store(sleeping, std::memory_order_release);
+    if (robot_task_handle != nullptr) {
+        xTaskNotifyGive(robot_task_handle);
+    }
+    for (int i = 0; i < 60; ++i) {
+        if (sleeping_ack.load(std::memory_order_acquire) == sleeping) {
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
 }
 
 void request(balance::Request request) {

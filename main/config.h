@@ -11,6 +11,8 @@
 // to minimize heat inside the sealed M5StickC Plus enclosure and protect the internal LiPo battery.
 constexpr int CPU_MIN_MHZ = 80;
 constexpr int CPU_MAX_MHZ = 80;
+// While in Wi-Fi `sleep` mode (100 Hz loop paused), allow DFS down to 40 MHz XTAL + light sleep.
+constexpr int CPU_SLEEP_MIN_MHZ = 40;
 
 // Setting defaults, until a value is saved on the robot: main/Kconfig.projbuild, overridden
 // for one robot in sdkconfig.local.
@@ -35,6 +37,7 @@ constexpr BaseType_t CONSOLE_CORE = 0;  // commands print floats; see "Cores" be
 // every STATUS_PERIOD_MS.
 constexpr uint32_t STATUS_PERIOD_MS = 1000;
 constexpr uint32_t STATUS_POLL_MS = 100;
+constexpr uint32_t STATUS_SLEEP_POLL_MS = 2000;  // 0.5 Hz quiet poll while in Wi-Fi sleep
 constexpr uint32_t STATUS_STACK_BYTES = 6144;
 constexpr UBaseType_t STATUS_PRIORITY = 1;
 constexpr BaseType_t STATUS_CORE = 0;  // pinned, as the CPU speed comes from a per-core counter
@@ -53,6 +56,7 @@ constexpr int ALARM_PERIOD_TICKS = 55;        // after a fall, beeps this often 
 // Wi-Fi (wifi.cpp). Channel 1 is where JoyX remotes without a network of their own are.
 constexpr uint8_t WIFI_AP_CHANNEL = 1;
 constexpr uint8_t WIFI_AP_MAX_CLIENTS = 4;
+constexpr uint16_t WIFI_SLEEP_LISTEN_INTERVAL = 3;  // beacons to sleep across in WIFI_PS_MAX_MODEM (~300 ms)
 constexpr uint32_t WIFI_RETRY_MIN_MS = 2000;  // after a disconnect, or no known network in range;
 constexpr uint32_t WIFI_RETRY_MAX_MS = 60000; // doubling each time up to this
 constexpr uint32_t WIFI_HOLD_MS = 5000;       // how often to ask again while scanning must wait

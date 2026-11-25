@@ -7,6 +7,7 @@
 #include "imu_calibration.h"
 #include "lan_server.h"
 #include "nvs_flash.h"
+#include "power_mode.h"
 #include "remote.h"
 #include "robot.h"
 #include "settings.h"
@@ -52,6 +53,10 @@ void start_console() {
 }  // namespace
 
 extern "C" void app_main() {
+    // Fast-path RTC timer check for usb-sleep: pulses ultra-dim LED if USB is still present,
+    // or transitions silently into wifi-sleep if USB was unplugged.
+    power_mode::handle_usb_sleep_wakeup();
+
     init_nvs();
     const esp_pm_config_t pm = {
         .max_freq_mhz = CPU_MAX_MHZ,
@@ -59,18 +64,28 @@ extern "C" void app_main() {
         .light_sleep_enable = false,
     };
     ESP_ERROR_CHECK(esp_pm_configure(&pm));
+    ESP_ERROR_CHECK(power_mode::init());
     ESP_ERROR_CHECK(init_board());
     ESP_ERROR_CHECK(settings::load_all());  // applies volume, brightness, gains & saved IMU calibration
+    if (power_mode::boot_to_wifi_sleep()) {
+        // Keep backlight off during silent usb-sleep -> wifi-sleep handoff.
+        board.pmic.set_backlight(0);
+    }
     ESP_ERROR_CHECK(robot::start());
     // Only calibrate once on a fresh flash; future reboots use the saved NVS offsets immediately.
     if (!imu_cal::is_calibrated()) {
         robot::zero_imu();
     }
-    board.speaker.play(STARTUP_MELODY);
+    if (!power_mode::boot_to_wifi_sleep()) {
+        board.speaker.play(STARTUP_MELODY);
+    }
     ESP_ERROR_CHECK(wifi::start(may_scan_for_networks));
     lan_server::set_stream_callback(telemetry_stream::pull_compressed);
     ESP_ERROR_CHECK(lan_server::start(LAN_AUTH_KEY));
     ESP_ERROR_CHECK(remote::start());
     ESP_ERROR_CHECK(start_status_screen());
     start_console();
+    if (power_mode::boot_to_wifi_sleep()) {
+        power_mode::enter_sleep(true);
+    }
 }

@@ -8,16 +8,22 @@
 #include <string_view>
 
 #include "balance_config.h"
+#include "control/modules.h"
 
 namespace balance {
 
 // An IMU reading in the robot's axes, standing: pitch tips it forward and back, yaw turns
 // it, and gravity is along `up`.
 struct Imu {
-    float pitch_dps;
-    float yaw_dps;
-    float forward_g;
-    float up_g;
+    float pitch_dps = 0;
+    float yaw_dps = 0;
+    float forward_g = 0;
+    float up_g = 0;
+    // Optional 6-DOF VQF fused attitude & online-bias-corrected rates (used when est == 1).
+    bool has_fused = false;
+    float fused_pitch_deg = 0;
+    float fused_pitch_dps = 0;
+    float fused_yaw_dps = 0;
 };
 
 struct Gains {
@@ -98,6 +104,12 @@ struct DebugTerms {
     float distance = 0;
     float power = 0;
     float yaw_deg = 0;
+    float eq_deg = 0;
+    float lyapunov_e = 0;
+    float duty_pct = 0;
+    float perch_pct = 0;
+    float energy_u2 = 0;
+    bool perched = false;
 };
 
 class Robot {
@@ -110,7 +122,7 @@ public:
     // Stops the robot if it's moving: the IMU stopped answering.
     void sensor_failed();
     // One tick of the control loop.
-    Motors step(const Imu& imu, const Gains& gains);
+    Motors step(const Imu& imu, const Gains& gains, const control::Config& ctrl = control::Config::classic());
 
     State state() const { return state_; }
     Fault fault() const { return fault_; }
@@ -120,6 +132,7 @@ public:
     float pitch_dps() const { return pitch_dps_; }
     float yaw_dps() const { return average_yaw_dps_; }
     Motors motors() const { return motors_; }
+    const control::State& control_state() const { return ctrl_state_; }
     DebugTerms debug_terms() const {
         return {
             .pitch_deg = pitch_,
@@ -130,6 +143,12 @@ public:
             .distance = distance_,
             .power = power_,
             .yaw_deg = yaw_,
+            .eq_deg = ctrl_state_.eq_deg,
+            .lyapunov_e = ctrl_state_.lyapunov_e,
+            .duty_pct = ctrl_state_.duty_pct(),
+            .perch_pct = ctrl_state_.perch_pct(),
+            .energy_u2 = ctrl_state_.energy_u2,
+            .perched = ctrl_state_.perched,
         };
     }
 
@@ -141,12 +160,12 @@ private:
 
     void enter(State state);
     void fall(Fault fault);
-    void estimate(const Imu& imu, const Gains& gains);
+    void estimate(const Imu& imu, const Gains& gains, const control::Config& ctrl);
     void calibrate_gyro(const Imu& imu);
-    void level(const Imu& imu);
+    void level(const Imu& imu, const control::Config& ctrl);
     void reset_motion();
-    void drive(const Gains& gains);
-    static int shape(float power, Wheel& wheel, const Gains& gains);
+    void drive(const Gains& gains, const control::Config& ctrl);
+    static int shape(float power, Wheel& wheel, const Gains& gains, const control::Config& ctrl);
     static bool upright(float up_g);
 
     State state_ = State::CALIBRATING;
@@ -159,12 +178,15 @@ private:
     float pitch_dps_offset_ = 0;
     float yaw_dps_offset_ = 0;
     float forward_g_offset_ = 0;
+    float fused_pitch_offset_ = 0;
     float pitch_dps_sum_ = 0;
     float yaw_dps_sum_ = 0;
     float forward_g_sum_ = 0;
+    float fused_pitch_sum_ = 0;
 
     // Estimate.
     float pitch_dps_ = 0;
+    float yaw_dps_ = 0;
     float pitch_ = 0;  // degrees, forward positive
     float yaw_ = 0;    // degrees turned since balancing started
     float average_yaw_dps_ = 0;
@@ -172,7 +194,8 @@ private:
 
     // Steering.
     float move_rate_ = 0;
-    float turn_step_ = 0;  // degrees of heading per tick
+    float turn_step_ = 0;      // degrees of heading per tick
+    float turn_rate_cmd_ = 0;  // slew-limited commanded yaw rate (deg/s) for SOTA mode
 
     // Controller.
     float move_target_ = 0;
@@ -188,6 +211,7 @@ private:
     Wheel left_;
     Wheel right_;
     Motors motors_;
+    control::State ctrl_state_;
 };
 
 }  // namespace balance

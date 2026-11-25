@@ -22,6 +22,18 @@
   - **Wi-Fi modem-sleep (`WIFI_PS_MIN_MODEM`)** automatically enabled in STA mode + **`+13 dBm` max TX power** (20 mW vs 100 mW default).
   - **Core pinning:** Core 1 runs only the deterministic 100 Hz IMU/balance loop (~10–15% load) while Core 0 handles Wi-Fi/HTTP/display; on ESP32 both cores share one clock & voltage rail, so keeping Core 1 deterministic and maximizing simultaneous `waiti` idle time is more energy-efficient than splitting work 50/50 across cores.
 
+### Power modes (`off` vs `sleep`) and wake reality
+- **Why not full AXP192 shutdown for remote USB wake?** Clearing AXP192 `Reg 0x32` bit 7 cuts `DC-DC1` (3.3 V to the ESP32-PICO-D4), making remote USB `RTS→EN` wake impossible — only pressing the physical power button (or replugging USB) restores `DC-DC1`.
+- **`off` mode (USB-charge deep sleep — plugged in only):**
+  - Guards: refused while motors are live (`ARMED` / `TAKING_OFF`), and refused when `usb_v < 4.0 V` unless `force` is passed.
+  - Hardware state: pauses Core 1 100 Hz loop (motors 0), puts `MPU6886` into 8 µA sleep (`PWR_MGMT_1` bit 6), stops Wi-Fi (`esp_wifi_stop()`), cuts AXP192 `LDO2` (LCD backlight), `LDO3` (LCD logic), `EXTEN` (5 V boost), and `LDOio0` (mic) while keeping `DC-DC1` + 100 mA LiPo charger ON, then enters `esp_deep_sleep_start()` (~1–2 mA system draw so the cell charges cool).
+  - Wake sources: USB serial `RTS→EN` reset pulse (`./tools/bx wake --usb` or `balax-remote` **Wake USB**, using `DTR=False, RTS=True` → `DTR=False, RTS=False` so it boots normally rather than into the ROM bootloader), plus physical Button A (`GPIO37`, `RTC_GPIO1`) ext0 active-LOW backup wake.
+- **`sleep` mode (Wi-Fi connected low-power sleep — wireless):**
+  - Guards: explicit sleep is refused while motors are live unless forced. Automatic idle sleep requires `READY`, disarmed, and continuous IMU-confirmed stillness for `idle_sleep_s` (default 180 s, `0` disables). Thermal sleep requires 3 consecutive hot samples (`pmic_c ≥ 46 °C` or `imu_c ≥ 58 °C`) during the same disarmed, stationary interval.
+  - Hardware state: pauses Core 1 100 Hz loop (motors 0), sleeps `MPU6886`, blanks/cuts `LDO2`/`EXTEN`/`LDOio0`, switches STA to `WIFI_PS_MAX_MODEM` (`listen_interval = 3`), drops CPU min to 40 MHz with automatic tickless light sleep (`CONFIG_FREERTOS_USE_TICKLESS_IDLE=y`), and throttles `status_task` to 0.5 Hz with LCD draws skipped.
+  - Wake sources: `wake` command, active control/OTA/program commands (`arm`, `takeoff`, `stream`, `ota`, `prog`), JoyX ESP-NOW packets, UART0 activity, or physical Button A (`GPIO37`). Passive queries (`status`, `probe`, `power`, `/api/challenge`) and `/api/stream` (returns 0 bytes + `X-Power-Mode: sleep`) do **not** wake a sleeping robot.
+  - While awake, `esp_pm_configure` keeps `light_sleep_enable = false` at 80 MHz so the 100 Hz Core 1 balance loop timing is completely unaffected.
+
 ## Buses
 - Internal I2C port 0 (SDA 21, SCL 22, 400 kHz): AXP192 at 0x34, MPU6886 at 0x68.
 - Hat I2C port 1 (SDA 0, SCL 26, 100 kHz): BalaC at 0x38. Write `[motor, int8]`; the right

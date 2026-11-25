@@ -46,7 +46,7 @@
 #define PIN_I2C_SCL 22
 #define LCD_W 135
 #define LCD_H 240
-#define LCD_X_OFF 52
+#define LCD_X_OFF 53
 #define LCD_Y_OFF 40
 #define SECTOR_BYTES 4096
 
@@ -205,12 +205,13 @@ static void bios_lcd_rect(int x, int y, int w, int h, uint16_t col) {
     lcd_cmd(0x2C);
 
     uint16_t be = (uint16_t)((col >> 8) | (col << 8));
-    uint16_t line[136];
+    // SPI_DMA_DISABLED caps each ESP32 polling transfer at 64 bytes (32 RGB565 pixels).
+    uint16_t line[32];
     size_t total = (size_t)w * (size_t)h;
-    size_t chunk = total < 136 ? total : 136;
+    size_t chunk = total < 32 ? total : 32;
     for (size_t i = 0; i < chunk; ++i) line[i] = be;
     while (total > 0) {
-        size_t n = total < 136 ? total : 136;
+        size_t n = total < 32 ? total : 32;
         lcd_send(1, (const uint8_t*)line, n * 2);
         total -= n;
     }
@@ -242,7 +243,7 @@ const balax_bios_v1_t BALAX_MICRO_BIOS = {
     .lcd_bar = bios_lcd_bar,
 };
 
-static void hw_init(void) {
+static __attribute__((noinline)) void hw_init(void) {
     gpio_set_direction(PIN_LED, GPIO_MODE_OUTPUT); bios_led_set(0);
     gpio_set_direction(PIN_BUZZER, GPIO_MODE_OUTPUT); gpio_set_level(PIN_BUZZER, 0);
     gpio_set_direction(PIN_BTN_A, GPIO_MODE_INPUT);
@@ -260,13 +261,21 @@ static void hw_init(void) {
         i2c_device_config_t dev_cfg = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = 0x34, .scl_speed_hz = 100000 };
         i2c_master_dev_handle_t axp = NULL;
         if (i2c_master_bus_add_device(i2c_bus, &dev_cfg, &axp) == ESP_OK) {
-            uint8_t pwr[2] = {0x12, 0x4D}; i2c_master_transmit(axp, pwr, 2, 50);
+            // Set 3.0 V on LDO2/LDO3 first, then enable rails and let LDO3 stabilize before LCD reset.
             uint8_t ldo[2] = {0x28, 0xCC}; i2c_master_transmit(axp, ldo, 2, 50);
+            uint8_t pwr[2] = {0x12, 0x4D}; i2c_master_transmit(axp, pwr, 2, 50);
+            uint8_t chg[2] = {0x33, 0xC0}; i2c_master_transmit(axp, chg, 2, 50);
+            vTaskDelay(pdMS_TO_TICKS(20));
         }
     }
 
-    spi_bus_config_t sb = { .mosi_io_num = PIN_LCD_MOSI, .miso_io_num = -1, .sclk_io_num = PIN_LCD_SCLK,
-                            .quadwp_io_num = -1, .quadhd_io_num = -1, .max_transfer_sz = 512 };
+    // IDF 6.1 requires all unused iocfg[] entries (including data4..data7) to be -1, not 0.
+    spi_bus_config_t sb;
+    memset(&sb, 0, sizeof sb);
+    for (int i = 0; i < 9; ++i) sb.iocfg[i] = -1;
+    sb.mosi_io_num = PIN_LCD_MOSI;
+    sb.sclk_io_num = PIN_LCD_SCLK;
+    sb.max_transfer_sz = 64;
     if (spi_bus_initialize(SPI2_HOST, &sb, SPI_DMA_DISABLED) == ESP_OK) {
         spi_device_interface_config_t sd = { .clock_speed_hz = 20000000, .mode = 0, .spics_io_num = PIN_LCD_CS, .queue_size = 1 };
         spi_bus_add_device(SPI2_HOST, &sd, &lcd_spi);
@@ -275,7 +284,7 @@ static void hw_init(void) {
     gpio_set_level(PIN_LCD_RST, 1); vTaskDelay(pdMS_TO_TICKS(50));
     lcd_cmd(0x11); vTaskDelay(pdMS_TO_TICKS(120));  // SLPOUT
     uint8_t pix = 0x55; lcd_cmd(0x3A); lcd_send(1, &pix, 1);  // RGB565
-    uint8_t mad = 0x00; lcd_cmd(0x36); lcd_send(1, &mad, 1);
+    uint8_t mad = 0xC0; lcd_cmd(0x36); lcd_send(1, &mad, 1);  // 180 deg upright (matches main app)
     lcd_cmd(0x21);  // INVON
     lcd_cmd(0x29);  // DISPON
     bios_lcd_clear(BIOS_COL_BG);
@@ -329,11 +338,21 @@ static void wifi_event_handler(void* arg, esp_event_base_t base, int32_t id, voi
         bios_beep(1200, 60);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         g_ip_be = 0;
+        static int net_idx = 0;
+        if (STUB_WIFI_COUNT > 1) {
+            net_idx = (net_idx + 1) % STUB_WIFI_COUNT;
+            wifi_config_t next_sta = {0};
+            if (STUB_WIFI_NETWORKS[net_idx].ssid) {
+                strncpy((char*)next_sta.sta.ssid, STUB_WIFI_NETWORKS[net_idx].ssid, sizeof(next_sta.sta.ssid) - 1);
+                strncpy((char*)next_sta.sta.password, STUB_WIFI_NETWORKS[net_idx].password, sizeof(next_sta.sta.password) - 1);
+                esp_wifi_set_config(WIFI_IF_STA, &next_sta);
+            }
+        }
         esp_wifi_connect();
     }
 }
 
-static int ota0_is_valid(void) {
+static __attribute__((noinline)) int ota0_is_valid(void) {
     const esp_partition_t* p = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, NULL);
     if (!p) return 0;
     esp_partition_pos_t pos = { .offset = p->address, .size = p->size };
@@ -365,8 +384,8 @@ static const char* find_hdr(const char* hdrs, const char* key, char* out, size_t
     return out;
 }
 
-static void send_http(int fd, const char* status, const char* ctype, const char* body) {
-    char buf[384];
+static __attribute__((noinline)) void send_http(int fd, const char* status, const char* ctype, const char* body) {
+    static char buf[384];
     int n = snprintf(buf, sizeof buf,
                      "HTTP/1.1 %s\r\nContent-Type: %s\r\nContent-Length: %u\r\n"
                      "Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n%s",
@@ -374,9 +393,8 @@ static void send_http(int fd, const char* status, const char* ctype, const char*
     send(fd, buf, (size_t)n, 0);
 }
 
-static void handle_client(int fd) {
-    g_last_activity_us = esp_timer_get_time();
-    char hdr[1024];
+static __attribute__((noinline)) void handle_client(int fd) {
+    static char hdr[1024];
     size_t hlen = 0;
     char* body_start = NULL;
     while (hlen + 1 < sizeof hdr) {
@@ -420,6 +438,8 @@ static void handle_client(int fd) {
         return;
     }
     g_nonce_valid = 0;
+    // Status and challenge probes should not hold the first boot in recovery.
+    g_last_activity_us = esp_timer_get_time();
 
     const esp_partition_t* ota0 = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, NULL);
     if (!ota0) { send_http(fd, "500 Internal Server Error", "text/plain", "No ota_0"); return; }
@@ -544,7 +564,12 @@ static void handle_client(int fd) {
 void app_main(void) {
     nvs_flash_init();
     hw_init();
-    int stay_forever = (bios_buttons_read() & 1) || !ota0_is_valid();
+    int ota0_ok = ota0_is_valid();
+    int stay_forever = (bios_buttons_read() & 1) || !ota0_ok;
+    printf("ota_stub: ready (ota0_valid=%d stay=%d)\n", ota0_ok, stay_forever);
+    if (ota0_ok && !stay_forever) {
+        bios_lcd_text(8, 86, "BTN B: BOOT APP", BIOS_COL_TEXT, BIOS_COL_BG, 1);
+    }
 
     esp_netif_init();
     esp_event_loop_create_default();
@@ -577,6 +602,7 @@ void app_main(void) {
     setsockopt(srv, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     g_last_activity_us = esp_timer_get_time();
 
+    int last_wait_pct = -1;
     for (;;) {
         int cli = accept(srv, NULL, NULL);
         if (cli >= 0) {
@@ -585,8 +611,22 @@ void app_main(void) {
             handle_client(cli);
             close(cli);
         }
-        // 60-second auto-return failsafe back to main app (unless Button A held or ota_0 invalid)
-        if (!stay_forever && (esp_timer_get_time() - g_last_activity_us) > 60LL * 1000 * 1000) {
+        int64_t idle_us = esp_timer_get_time() - g_last_activity_us;
+        if (!stay_forever && ota0_ok) {
+            int pct = (int)((idle_us * 100LL) / (60LL * 1000 * 1000));
+            if (pct < 0) pct = 0;
+            if (pct > 100) pct = 100;
+            if (pct >= last_wait_pct + 5 || pct == 0) {
+                last_wait_pct = pct;
+                bios_lcd_bar(8, 108, LCD_W - 16, 14, pct, BIOS_COL_BLUE, BIOS_COL_BAR_BG);
+            }
+        }
+        // Button B immediately hands off to main app when valid; otherwise auto-return after 60 s.
+        if ((ota0_ok && (bios_buttons_read() & 2)) ||
+            (!stay_forever && idle_us > 60LL * 1000 * 1000)) {
+            bios_lcd_bar(8, 108, LCD_W - 16, 14, 100, BIOS_COL_GREEN, BIOS_COL_BAR_BG);
+            bios_lcd_text(8, 130, "BOOTING APP...", BIOS_COL_GREEN, BIOS_COL_BG, 1);
+            printf("ota_stub: returning to ota_0\n");
             return_to_ota0();
         }
     }

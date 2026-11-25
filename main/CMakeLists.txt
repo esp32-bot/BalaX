@@ -1,10 +1,11 @@
 idf_component_register(
-    SRCS "main.cpp" "board.cpp" "app_settings.cpp" "gain_settings.cpp" "imu_calibration.cpp"
+    SRCS "main.cpp" "board.cpp" "app_settings.cpp" "gain_settings.cpp" "control_settings.cpp" "imu_calibration.cpp"
          "status.cpp" "status_view.cpp" "cpu_stats.cpp" "commands.cpp" "balance.cpp"
          "robot.cpp" "telemetry_stream.cpp" "remote_protocol.cpp" "remote.cpp" "wifi.cpp"
-         "prog_vm.cpp" "lan_server.cpp"
+         "prog_vm.cpp" "lan_server.cpp" "power_mode.cpp"
     INCLUDE_DIRS "."
     PRIV_REQUIRES m5stickc_plus balac gfx settings console console_commands esp_pm esp_timer esp_hw_support
+                  esp_driver_uart esp_driver_gpio
                   nvs_flash esp_wifi esp_netif esp_event spi_flash esp_http_server app_update
                   bootloader_support esp_partition
                   espcoredump  # nothing calls it, but the minimal build leaves out what isn't required

@@ -21,6 +21,24 @@ This repository is the BalaX self-balancing robot firmware (`esp32-bot/balax`), 
   - Inspect flash/RAM contributions with `idf.py size-components` / `esp_idf_size --archives build/balax.map` and verify in the `balax-remote` **CPU**, **RAM**, and **Flash** monitor tabs.
   - Respect the sealed M5StickC Plus thermal budget (80 MHz CPU, `WIFI_PS_MIN_MODEM`, `+13 dBm` TX cap, 200 Hz RTOS tick, LCD skip at `brightness == 0`, pre-flash battery `≥ 30%` & temp gates).
 
+## USB flashing
+
+- Ask before writing firmware over USB. When `balax-remote` is open, route the flash through its web UI or local bridge so the user can see the progress bar and messages there.
+- Skip backing up installed firmware unless the user explicitly requests a backup.
+- Use a direct terminal USB flash only when the web app is closed. If the open app cannot handle the requested image or partition layout, report the blocker and pause the flash.
+
+## Idle power, sleep & USB off
+
+- **Default to cool/idle when not actively testing the robot.** The sealed M5StickC Plus heats up quickly when awake (especially while USB charging). Never leave BalaX awake or streaming telemetry when you are only editing/building code.
+- **Choose the right low-power mode:**
+  - **Plugged into USB → `usb-sleep` (`./tools/bx usb-sleep`, alias `off`, or `balax-remote` USB Sleep):** Enters ESP32 deep sleep with Wi-Fi off, IMU asleep (8 µA), and LCD/LDO2/LDO3/EXTEN/LDOio0 cut while keeping `DC-DC1` + the AXP192 100 mA LiPo charger active (~1–2 mA system draw so it charges cool). Refused when unplugged (`usb_v < 4.0 V`) unless `--force` is passed. Wake remotely over USB with `./tools/bx wake --usb` (pulses `RTS→EN`, no button press needed).
+  - **Wireless / needs Wi-Fi reachability → `wifi-sleep` (`./tools/bx wifi-sleep`, alias `sleep`, or `balax-remote` Wi-Fi Sleep):** Pauses the 100 Hz Core 1 loop (disarmed, motors 0), sleeps MPU6886, cuts LCD/EXTEN/LDOio0, switches STA to `WIFI_PS_MAX_MODEM` (`listen_interval = 3`), and enables 40 MHz DFS + tickless light sleep while staying reachable at `balax.local`. Wake over Wi-Fi with `./tools/bx wake` (or active commands like `arm`, `takeoff`, OTA, `prog`, JoyX, or Button A).
+- **Do not accidentally wake a sleeping/off robot:**
+  - Read passive state without waking via `./tools/bx power` or `balax lan-cmd "probe power_mode idle_s pmic_c imu_c usb_v battery_pct"`.
+  - Keep `balax-remote` paused while sleeping (`./tools/bx sleep` and `./tools/bx off` automatically notify the local bridge via `POST /api/bridge/power` with `localOnly: true`, and `/api/stream` returns `X-Power-Mode: sleep` with 0 bytes so the bridge pauses immediately).
+  - Firmware auto-sleeps after `idle_sleep_s` (default 180 s) when `READY`, disarmed, stationary and idle throughout the interval. Thermal sleep requires 3 consecutive samples at `pmic_c ≥ 46 °C` or `imu_c ≥ 58 °C` during continuous disarmed stillness.
+- **Physical power-off caveat:** True AXP192 hard shutdown (`Reg 0x32 bit 7`) cuts `DC-DC1` (3.3 V to ESP32), so USB `RTS→EN` cannot wake it; only the physical power button (or USB replug) powers it back on. Use `usb-sleep` instead when you need remote USB wake while charging (and it auto-transitions to `wifi-sleep` within 10 s if USB is unplugged, with an ultra-dim 10 s LED pulse vs 4 s faint pulse in `wifi-sleep`).
+
 ## Dev servers & user testing (0SFS convention)
 
 - **Never leave a background dev server running as the handoff.** A backgrounded dev server started by an agent tool call is tied to that tool turn and cuts out when a new message arrives.

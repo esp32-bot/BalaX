@@ -9,7 +9,7 @@
 #include "status_values.h"
 
 // Samples attitude each STATUS_POLL_MS and system readings each STATUS_PERIOD_MS.
-// Display updates pause while the backlight is off or OTA/BXVM owns the LCD.
+// Display updates pause while the backlight is off, sleeping, or OTA/BXVM owns the LCD.
 esp_err_t start_status_screen();
 // The readings as last shown; safe from any task.
 status::Values latest_status();
@@ -22,6 +22,9 @@ namespace status_lcd {
 
 // Temporarily pauses the status screen redraws while OTA or a mini-program owns the LCD.
 void set_busy(bool busy);
+// Marks the LCD dirty and wakes status_task (used when waking from Wi-Fi sleep).
+void request_repaint();
+void notify_task();
 // Thread-safe Micro-BIOS primitives routed through board.display.fill_rect.
 void clear(uint16_t rgb565);
 void fill_rect(int x, int y, int w, int h, uint16_t rgb565);

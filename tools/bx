@@ -5,6 +5,10 @@
 #   balax lan-flash [host] [--force] same as lan-flash (works from any folder after install-cli)
 #   balax lan-cmd [host] <cmd>       run a console command over Wi-Fi (defaults to balax.local)
 #   balax lan-monitor [host]         stream live logs over Wi-Fi (defaults to balax.local)
+#   balax power [host]                     inspect power mode, USB presence, and temps without waking sleep
+#   balax wifi-sleep [host] [--force]      put robot into Wi-Fi low-power sleep (alias: sleep)
+#   balax wake [host|--usb]                wake robot over Wi-Fi (`wake`) or reboot out of `usb-sleep` over USB (`--usb`)
+#   balax usb-sleep [host|--usb] [--force] put USB-plugged robot into cool-charge deep sleep (alias: off)
 #   balax build                      compile firmware (incremental, cached)
 #   balax build-stub                 compile standalone minimal factory OTA stub (ota_stub/)
 #   balax flash                      build, then flash over USB
@@ -42,7 +46,7 @@ PINNED_IDF="$HOME/esp/$IDF_VERSION/esp-idf"
 FLASH_BAUD="${BX_BAUD:-1500000}"  # the M5StickC Plus USB chip's fastest reliable rate
 
 usage() {
-  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # Non-interactive callers (e.g. Zed ACP / CI / pipes) freeze or bloat if flooded with
@@ -144,6 +148,88 @@ robot_port() {
   esac
 }
 
+# Best-effort: pause local balax-remote bridge polling before entering sleep/off so the bridge
+# doesn't keep hitting balax.local while BalaX is supposed to cool down.
+notify_bridge_power() {
+  local mode="$1"
+  local bridge="${BX_BRIDGE_URL:-http://127.0.0.1:5180}"
+  curl -fsS --max-time 0.4 -X POST "${bridge}/api/bridge/power" \
+    -H "Content-Type: application/json" \
+    -d "{\"mode\":\"${mode}\",\"localOnly\":true}" >/dev/null 2>&1 || true
+}
+
+power_sleep() {
+  local host=""
+  local force=""
+  for arg in "$@"; do
+    case "$arg" in
+      --force|force) force=" force" ;;
+      *) host="$arg" ;;
+    esac
+  done
+  notify_bridge_power "wifi-sleep"
+  if [[ -n "$host" ]]; then
+    python3 "$TOOLS_DIR/lan.py" cmd "$host" "wifi-sleep${force}"
+  else
+    python3 "$TOOLS_DIR/lan.py" cmd "wifi-sleep${force}"
+  fi
+}
+
+power_wake() {
+  local use_usb=0
+  local host=""
+  for arg in "$@"; do
+    case "$arg" in
+      --usb|-u) use_usb=1 ;;
+      *) host="$arg" ;;
+    esac
+  done
+  if [[ "$use_usb" -eq 1 ]]; then
+    "$(idf_python)" "$TOOLS_DIR/usb_power.py" wake --port "$(robot_port)"
+  elif [[ -n "$host" ]]; then
+    python3 "$TOOLS_DIR/lan.py" cmd "$host" "wake"
+  else
+    python3 "$TOOLS_DIR/lan.py" cmd "wake"
+  fi
+}
+
+power_off() {
+  local use_usb=0
+  local force=0
+  local host=""
+  for arg in "$@"; do
+    case "$arg" in
+      --usb|-u) use_usb=1 ;;
+      --force|force) force=1 ;;
+      *) host="$arg" ;;
+    esac
+  done
+  notify_bridge_power "usb-sleep"
+  if [[ "$use_usb" -eq 1 ]]; then
+    if [[ "$force" -eq 1 ]]; then
+      "$(idf_python)" "$TOOLS_DIR/usb_power.py" off --port "$(robot_port)" --force
+    else
+      "$(idf_python)" "$TOOLS_DIR/usb_power.py" off --port "$(robot_port)"
+    fi
+  else
+    local cmd="usb-sleep"
+    [[ "$force" -eq 1 ]] && cmd="usb-sleep force"
+    if [[ -n "$host" ]]; then
+      python3 "$TOOLS_DIR/lan.py" cmd "$host" "$cmd"
+    else
+      python3 "$TOOLS_DIR/lan.py" cmd "$cmd"
+    fi
+  fi
+}
+
+power_status() {
+  if [[ $# -gt 0 ]]; then
+    python3 "$TOOLS_DIR/lan.py" cmd "$1" "power"
+  else
+    python3 "$TOOLS_DIR/lan.py" cmd "power"
+  fi
+}
+
 install_cli() {
   local bin_dir="$HOME/.local/bin"
   mkdir -p "$bin_dir"
@@ -177,7 +263,10 @@ lan_flash() {
 
 # Firmware code that's plain C++, built for the laptop.
 HOST_BUILD="$REPO/host/build"
-SHARED_COMP="$REPO/../tools/components"
+SHARED_COMP="$REPO/../../esp32-tools/tools/components"
+if [[ ! -d "$SHARED_COMP" ]]; then
+  SHARED_COMP="$REPO/../tools/components"  # an older checkout beside BalaX
+fi
 if [[ ! -d "$SHARED_COMP" ]]; then
   SHARED_COMP="$REPO/components"
 fi
@@ -238,6 +327,10 @@ case "$command" in
   lan-flash)   lan_flash "$@" ;;
   lan-monitor) python3 "$TOOLS_DIR/lan.py" monitor "$@" ;;
   lan-cmd)     python3 "$TOOLS_DIR/lan.py" cmd "$@" ;;
+  power)       power_status "$@" ;;
+  wifi-sleep|sleep) power_sleep "$@" ;;
+  wake)             power_wake "$@" ;;
+  usb-sleep|off)    power_off "$@" ;;
   install-cli) install_cli ;;
   gui)         python3 "$TOOLS_DIR/gui.py" "$@" ;;
   dist)        python3 "$TOOLS_DIR/dist.py" --channel "${1:-dev}" ;;

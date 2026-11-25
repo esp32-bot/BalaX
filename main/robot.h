@@ -22,9 +22,12 @@ struct Telemetry {
     bool motors_live = false;     // the wheels may be turning
     bool base_present = false;    // the BalaC base answers
     float pitch_deg = NAN;
+    float roll_dps = 0;           // + = rolling right (deg/s)
     float yaw_dps = NAN;
     imu_fusion::EulerDeg fused_deg{};
     bool imu_resting = false;
+    int64_t stationary_since_us = 0; // valid continuous quiet IMU samples while disarmed
+    int64_t sampled_at_us = 0;
     balance::Motors motors;
     balance::DebugTerms terms;
     float imu_c = NAN;
@@ -52,6 +55,10 @@ void request(balance::Request request);
 // to the middle.
 void steer(float forward, float turn);
 Telemetry telemetry();
+
+// Pauses/resumes the 100 Hz Core 1 loop cleanly for low-power sleep: disarms, zeros motors,
+// puts MPU6886 into hardware sleep, and blocks Core 1 until woken (restoring the 100 Hz loop).
+void set_sleeping(bool sleeping);
 
 // Captures ~1.0s of stationary raw IMU samples, saves biases to NVS flash (preserving
 // an existing 6-face accel calibration if present), resets heading/online bias, and

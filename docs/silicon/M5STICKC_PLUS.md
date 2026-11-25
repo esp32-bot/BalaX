@@ -64,7 +64,7 @@ Unlike `ESP32-WROOM-32` / `ESP32-S` (where flash uses `GPIO 6–11` and `GPIO 16
 
 ## 2. Complete M5StickC Plus Pin & Bus Map
 
-Verified against `~/gh/esp32-bot/tools/components/m5stickc_plus/include/m5stickc_plus/pins.h`:
+Verified against `~/gh/esp32-tools/tools/components/m5stickc_plus/include/m5stickc_plus/pins.h`:
 
 ### 2.1 Internal I²C Bus (Port 0 — `GPIO21` SDA, `GPIO22` SCL, 400 kHz)
 | 7-bit Addr | Silicon | Role | BalaX Access Pattern |

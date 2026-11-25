@@ -8,3 +8,4 @@
 
 extern settings::Setting<uint8_t> volume;
 extern settings::Setting<uint8_t> brightness;
+extern settings::Setting<uint16_t> idle_sleep_s;

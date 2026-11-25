@@ -16,8 +16,10 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_80=y
 CONFIG_FREERTOS_HZ=200
 
-# Enable ESP power management (waiti clock-gating + Wi-Fi modem-sleep coordination)
+# Enable ESP power management (waiti clock-gating + Wi-Fi modem-sleep + automatic light sleep
+# enabled ONLY while in Wi-Fi `sleep` mode; awake mode locks 80 MHz with light_sleep_enable=false).
 CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
 # Time spent in each task, for the CPU load on the status screen & `probe` command
 CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 

@@ -75,6 +75,20 @@ TEST(imu_fusion_rest_detection_adapts_residual_thermal_bias) {
     CHECK(std::abs(yaw_after - yaw_before) < 0.2f);
 }
 
+TEST(imu_fusion_stationarity_breaks_before_rest_hysteresis) {
+    ImuFusion6Dof f(100.0f);
+    CHECK(!f.is_stationary());
+    for (int i = 0; i < 1100; ++i) {
+        f.update_m5stick(0, -1, 0, 0, 0, 0, 0.01f);
+    }
+    CHECK(f.is_stationary());
+    f.update_m5stick(0, -1, 0, 0, 5, 0, 0.01f);
+    CHECK(f.is_resting());
+    CHECK(!f.is_stationary());
+    f.update_m5stick(0.12f, -1, 0, 0, 0, 0, 0.01f);
+    CHECK(!f.is_stationary());
+}
+
 TEST(balance_skips_boot_and_fall_calibration_when_saved_in_flash) {
     balance::Robot robot;
     CHECK(robot.state() == balance::State::CALIBRATING);

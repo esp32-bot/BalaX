@@ -18,13 +18,17 @@
 #include "esp_wifi.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "idle_power.h"
 #include "lan_server.h"
 #include "m5stickc_plus/screen.h"
 #include "micro_bios.h"
+#include "control_settings.h"
+#include "power_mode.h"
 #include "prog_vm.h"
 #include "remote.h"
 #include "robot.h"
 #include "status_view.h"
+#include "telemetry_stream.h"
 #include "wifi.h"
 
 namespace {
@@ -40,6 +44,7 @@ CpuStats cpu;  // sampled by the status task
 portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 status::Values latest;  // guarded by `lock`
 
+TaskHandle_t status_task_handle = nullptr;
 SemaphoreHandle_t lcd_mutex = nullptr;
 std::atomic<bool> lcd_owner_busy{false};
 std::atomic<bool> lcd_needs_repaint{true};
@@ -152,7 +157,7 @@ void draw_status(const status::ScreenValues& values, bool update_system) {
     if (!lcd_mutex || xSemaphoreTake(lcd_mutex, pdMS_TO_TICKS(50)) != pdTRUE) {
         return;
     }
-    if (brightness.get() == 0 || lcd_owner_busy.load()) {
+    if (brightness.get() == 0 || lcd_owner_busy.load() || power_mode::is_sleeping()) {
         xSemaphoreGive(lcd_mutex);
         return;
     }
@@ -160,7 +165,7 @@ void draw_status(const status::ScreenValues& values, bool update_system) {
     const bool repaint = lcd_needs_repaint.exchange(false);
     const int rows = update_system || repaint ? m5::SCREEN_HEIGHT : status::ATTITUDE_ROWS;
     for (int y = 0; y < rows; y += status::STRIP_ROWS) {
-        if (lcd_owner_busy.load()) {
+        if (lcd_owner_busy.load() || power_mode::is_sleeping()) {
             lcd_needs_repaint.store(true);
             break;
         }
@@ -183,8 +188,34 @@ void status_task(void*) {
     status::Values values;
     status::ScreenValues screen{values};
     TickType_t wake = xTaskGetTickCount();
+    bool was_sleeping = false;
     for (uint32_t poll = 0;; ++poll) {
+        if (power_mode::is_sleeping()) {
+            was_sleeping = true;
+            lcd_needs_repaint.store(true);
+            read_power(values);
+            const robot::Telemetry robot = robot::telemetry();
+            read_robot(values, robot);
+            taskENTER_CRITICAL(&lock);
+            latest = values;
+            taskEXIT_CRITICAL(&lock);
+            power_mode::poll_from_status_task(values, robot, false, false);
+            if (!power_mode::is_sleeping()) {
+                wake = xTaskGetTickCount();
+                continue;
+            }
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(STATUS_SLEEP_POLL_MS));
+            continue;
+        }
+        if (was_sleeping) {
+            was_sleeping = false;
+            poll = 0;
+            wake = xTaskGetTickCount();
+        }
+
         const bool period = poll % POLLS_PER_PERIOD == 0;
+        const robot::Telemetry robot = robot::telemetry();
+        read_robot(values, robot);
         if (period) {
             cpu.sample();
             read_power(values);
@@ -195,16 +226,15 @@ void status_task(void*) {
             screen.flash_skipped = ota.last_sectors_skipped;
             screen.vm_hits = vm.cache_hits;
             screen.vm_running = vm.running;
+            power_mode::poll_from_status_task(values, robot::telemetry(), telemetry_stream::stats().active, vm.running);
         }
-        const robot::Telemetry robot = robot::telemetry();
-        read_robot(values, robot);
         screen.pitch_deg = std::isfinite(robot.imu_c) ? robot.fused_deg.pitch : NAN;
         screen.roll_deg = std::isfinite(robot.imu_c) ? robot.fused_deg.roll : NAN;
         taskENTER_CRITICAL(&lock);
         latest = values;
         taskEXIT_CRITICAL(&lock);
 
-        if (brightness.get() == 0) {
+        if (brightness.get() == 0 || power_mode::is_sleeping()) {
             lcd_needs_repaint.store(true);
         } else if (!lcd_owner_busy.load()) {
             draw_status(screen, period);
@@ -239,6 +269,27 @@ bool print_one_field(const char* name, const status::Values& values, const robot
         const auto s = balance::name(values.fault);
         if (labeled) printf("%-13s %.*s\n", name, static_cast<int>(s.size()), s.data());
         else printf("%.*s\n", static_cast<int>(s.size()), s.data());
+        return true;
+    }
+    if (strcmp(name, "power_mode") == 0) { emit_str(idle_power::name(power_mode::current())); return true; }
+    if (strcmp(name, "idle_s") == 0)     { emit_num(static_cast<float>(power_mode::idle_seconds()), 0); return true; }
+    if (strcmp(name, "idle_sleep_s") == 0) { emit_num(static_cast<float>(idle_sleep_s.get()), 0); return true; }
+    if (strcmp(name, "perched") == 0)     { emit_str(rt.terms.perched ? "yes" : "no"); return true; }
+    if (strcmp(name, "eq_deg") == 0)      { emit_num(rt.terms.eq_deg, 2); return true; }
+    if (strcmp(name, "lyapunov_e") == 0)  { emit_num(rt.terms.lyapunov_e, 2); return true; }
+    if (strcmp(name, "motor_duty") == 0)  { emit_num(rt.terms.duty_pct, 1); return true; }
+    if (strcmp(name, "perch_pct") == 0)   { emit_num(rt.terms.perch_pct, 1); return true; }
+    if (strcmp(name, "ctrl_energy") == 0) { emit_num(rt.terms.energy_u2, 1); return true; }
+    if (strcmp(name, "ctrl_mode") == 0) {
+        const auto cfg = control_settings::current();
+        char buf[120];
+        snprintf(buf, sizeof buf, "est=%s ctrl=%s perch=%s shaper=%s takeoff=%s",
+                 control::name(cfg.estimator_mode()).data(),
+                 control::name(cfg.controller_mode()).data(),
+                 control::name(cfg.perch_mode()).data(),
+                 control::name(cfg.shaper_mode()).data(),
+                 control::name(cfg.takeoff_mode()).data());
+        emit_str(buf);
         return true;
     }
     if (strcmp(name, "brightness") == 0) { emit_num(values.brightness_pct, 0); return true; }
@@ -287,6 +338,17 @@ void set_busy(bool busy) {
     }
 }
 
+void request_repaint() {
+    lcd_needs_repaint.store(true);
+    notify_task();
+}
+
+void notify_task() {
+    if (status_task_handle != nullptr) {
+        xTaskNotifyGive(status_task_handle);
+    }
+}
+
 void clear(uint16_t rgb565) {
     ensure_lcd_mutex();
     if (lcd_mutex && xSemaphoreTake(lcd_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
@@ -325,6 +387,10 @@ void draw_ota_progress(const char* label, int pct, const char* detail) {
         return;
     }
     if (pct <= 0) {
+        // Ensure the OTA progress bar is visible even when user saved brightness == 0 for thermals.
+        if (brightness.get() == 0) {
+            board.pmic.set_backlight(50);
+        }
         board.display.fill_rect(0, 0, m5::SCREEN_WIDTH, m5::SCREEN_HEIGHT, BIOS_COL_BG);
         draw_line_fast(8, 20, "BALAX OTA", BIOS_COL_BLUE, BIOS_COL_BG, 2);
     }
@@ -343,8 +409,8 @@ void draw_ota_progress(const char* label, int pct, const char* detail) {
 
 esp_err_t start_status_screen() {
     ensure_lcd_mutex();
-    return xTaskCreatePinnedToCore(status_task, "status", STATUS_STACK_BYTES, nullptr, STATUS_PRIORITY, nullptr,
-                                   STATUS_CORE) == pdPASS
+    return xTaskCreatePinnedToCore(status_task, "status", STATUS_STACK_BYTES, nullptr, STATUS_PRIORITY,
+                                   &status_task_handle, STATUS_CORE) == pdPASS
                ? ESP_OK
                : ESP_ERR_NO_MEM;
 }
@@ -365,6 +431,9 @@ void print_status() {
     const std::string_view fault = balance::name(values.fault);
     printf("%-13s %.*s\n", "state", static_cast<int>(state.size()), state.data());
     printf("%-13s %.*s\n", "fault", static_cast<int>(fault.size()), fault.data());
+    printf("%-13s %s\n", "power_mode", idle_power::name(power_mode::current()));
+    printf("%-13s %lld\n", "idle_s", static_cast<long long>(power_mode::idle_seconds()));
+    printf("%-13s %u\n", "idle_sleep_s", static_cast<unsigned>(idle_sleep_s.get()));
     for (const status::Field& field : status::FIELDS) {
         printf("%-13s %.*f\n", field.name, field.decimals, values.*field.value);
     }
@@ -396,7 +465,7 @@ int print_probe(int argc, char** argv) {
         return 0;
     }
     if (argc == 2 && strcmp(argv[1], "list") == 0) {
-        printf("state fault");
+        printf("state fault power_mode idle_s idle_sleep_s");
         for (const status::Field& field : status::FIELDS) {
             printf(" %s", field.name);
         }

@@ -13,3 +13,4 @@ __pycache__/
 ota_stub/build/
 ota_stub/sdkconfig
 ota_stub/sdkconfig.old
+backups/

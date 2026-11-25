@@ -1,5 +1,23 @@
 # Building & Flashing BalaX
 
+## USB flash from the remote
+
+With BalaX connected by USB, open the remote on the computer that has the
+USB cable and select **Firmware OTA → USB Flash**. Select the detected port
+and the partition layout, then confirm the write. The tab shows progress
+and messages from the local USB tool.
+
+The bridge uses images from `./tools/bx build`. For Compact, also run
+`./tools/bx build-stub` from the BalaX checkout if the updater image is missing.
+
+Use **Compact** for one main app slot and a factory recovery stub. This writes
+the partition table and both firmware images. The settings partition stays at
+the same offset. Keep the USB cable connected until the flash completes. The
+recovery stub can take about a minute to hand off to the main firmware on
+the first boot.
+
+Use the terminal USB commands below when the web app is closed.
+
 ## Quickest way (from any terminal folder)
 
 After running `./tools/bx install-cli` once (already installed in `~/.local/bin`), you don't need `cd` or `./`:

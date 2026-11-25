@@ -153,6 +153,7 @@ public:
         gyro_var_ = 0.0f;
         rest_time_s_ = 0;
         resting_ = false;
+        quiet_sample_ = false;
         seeded_ = false;
     }
 
@@ -168,6 +169,7 @@ public:
     void reset_online_bias() {
         bias_rad_ = {0, 0, 0};
         rest_time_s_ = 0;
+        quiet_sample_ = false;
     }
 
     // Update from calibrated M5StickC Plus MPU6886 axes:
@@ -179,6 +181,7 @@ public:
 
     // Update directly in Right-Handed Robot Body Frame B (+X Left, +Y Up, +Z Forward).
     void update_body(const Vec3& accel_b_g, const Vec3& gyro_b_rad, float dt_s) {
+        quiet_sample_ = false;
         const float dt = std::clamp(dt_s, 0.0005f, 0.05f);
         const float a_norm = std::sqrt(accel_b_g.x * accel_b_g.x + accel_b_g.y * accel_b_g.y + accel_b_g.z * accel_b_g.z);
 
@@ -234,9 +237,11 @@ public:
         constexpr float INSTANT_W_BREAK = 10.0f * DEG_TO_RAD; // immediate exit on real rotation
         constexpr float INSTANT_A_BREAK = 0.085f;             // immediate exit on real linear impulse
 
+        const bool low_motion = w_mag < REST_W_THRESH && w_rms < REST_WRMS_THRESH && a_rms < REST_ARMS_THRESH;
+        quiet_sample_ = low_motion && a_dev <= INSTANT_A_BREAK && a_norm > 0.85f && a_norm < 1.15f;
         if (w_mag > INSTANT_W_BREAK || a_dev > INSTANT_A_BREAK) {
             rest_time_s_ = 0.0f;
-        } else if (w_mag < REST_W_THRESH && w_rms < REST_WRMS_THRESH && a_rms < REST_ARMS_THRESH) {
+        } else if (low_motion) {
             rest_time_s_ = std::min(rest_time_s_ + dt, 10.0f);
         } else {
             rest_time_s_ = std::max(0.0f, rest_time_s_ - 3.0f * dt);
@@ -292,6 +297,8 @@ public:
 
     Quat quaternion() const { return q_fused_; }
     bool is_resting() const { return resting_; }
+    // Sleep requires a quiet current sample as well as the fusion rest window.
+    bool is_stationary() const { return resting_ && quiet_sample_; }
     Vec3 online_bias_dps() const { return {bias_rad_.x * RAD_TO_DEG, bias_rad_.y * RAD_TO_DEG, bias_rad_.z * RAD_TO_DEG}; }
 
     // Gravity-compensated world linear acceleration in m/s^2 (Right-Handed World Frame).
@@ -333,6 +340,7 @@ private:
     BiquadLowPass3 acc_lp_;
     float rest_time_s_ = 0.0f;
     bool resting_ = false;
+    bool quiet_sample_ = false;
     bool seeded_ = false;
 };
 

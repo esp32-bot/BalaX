@@ -1,6 +1,8 @@
 #include "lan_server.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -20,6 +22,8 @@
 #include "freertos/task.h"
 #include "miniz.h"  // ESP32 Mask ROM tinfl_decompress (0 bytes Flash!)
 #include "nvs.h"
+#include "idle_power.h"
+#include "power_mode.h"
 #include "prog_vm.h"
 #include "sha256_hmac.h"
 #include "spi_flash_mmap.h"
@@ -273,16 +277,17 @@ esp_err_t handle_challenge(httpd_req_t* req) {
 
     const esp_partition_t* running = esp_ota_get_running_partition();
     const esp_app_desc_t* app = esp_app_get_description();
-    char body[256];
+    char body[288];
     const int len = snprintf(
         body, sizeof body,
         "{\"nonce\":\"%s\",\"partition\":\"%s\",\"version\":\"%s\","
         "\"compressed_ota\":true,\"sector_skip\":true,\"prog_vm\":true,\"has_factory\":%s,"
-        "\"flash_erases\":%lu}",
+        "\"power_mode\":\"%s\",\"flash_erases\":%lu}",
         nonce_hex,
         running ? running->label : "unknown",
         app ? app->version : "unknown",
         g_has_factory ? "true" : "false",
+        idle_power::name(power_mode::current()),
         static_cast<unsigned long>(g_flash_erases_total));
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, body, len);
@@ -403,7 +408,14 @@ esp_err_t handle_lan_ota(httpd_req_t* req) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No target OTA partition");
         return ESP_FAIL;
     }
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    if (!running || running->address == update_part->address) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_sendstr(req, "No inactive OTA slot. Enter the factory updater before uploading.");
+        return ESP_FAIL;
+    }
 
+    power_mode::wake();
     // Stop any running mini-program & clear unpinned DRAM cache to maximize heap headroom for tinfl!
     prog_vm::stop();
     vTaskDelay(pdMS_TO_TICKS(30));
@@ -595,6 +607,7 @@ esp_err_t handle_lan_ota(httpd_req_t* req) {
 esp_err_t handle_ota_enter(httpd_req_t* req) {
     set_cors_headers(req);
     if (!auth_empty_request(req)) return ESP_FAIL;
+    power_mode::wake();
     const esp_partition_t* factory =
         esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, nullptr);
     if (!factory) {
@@ -659,6 +672,19 @@ esp_err_t handle_lan_cmd(httpd_req_t* req) {
         stdout = mem_file;
     }
 
+    const auto is_passive_cmd = [](const char* s) {
+        while (*s == ' ' || *s == '\t') ++s;
+        auto starts_word = [&](const char* w) {
+            const size_t n = strlen(w);
+            return strncmp(s, w, n) == 0 && (s[n] == '\0' || s[n] == ' ' || s[n] == '\t');
+        };
+        return starts_word("status") || starts_word("probe") || starts_word("power") ||
+               starts_word("wifi-sleep") || starts_word("usb-sleep") ||
+               starts_word("sleep") || starts_word("off") || starts_word("stream");
+    };
+    if (!is_passive_cmd(cmd)) {
+        power_mode::note_activity();
+    }
     int cmd_ret = 0;
     const esp_err_t err = esp_console_run(cmd, &cmd_ret);
     fflush(stdout);
@@ -685,9 +711,67 @@ esp_err_t handle_lan_cmd(httpd_req_t* req) {
     return httpd_resp_send(req, out_buf, out_pos);
 }
 
+esp_err_t handle_lan_drive(httpd_req_t* req) {
+    set_cors_headers(req);
+    char nonce_hex[NONCE_BYTES * 2 + 4] = {};
+    char sig_hex[68] = {};
+    if (httpd_req_get_hdr_value_str(req, "X-Nonce", nonce_hex, sizeof nonce_hex) != ESP_OK ||
+        httpd_req_get_hdr_value_str(req, "X-Signature", sig_hex, sizeof sig_hex) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "Missing X-Nonce or X-Signature");
+        return ESP_FAIL;
+    }
+    std::array<uint8_t, NONCE_BYTES> nonce{};
+    if (!consume_nonce(nonce_hex, nonce)) {
+        httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "Invalid or expired challenge nonce");
+        return ESP_FAIL;
+    }
+    char body[64] = {};
+    const int len = httpd_req_recv(req, body, sizeof body - 1);
+    if (len < 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read drive vector");
+        return ESP_FAIL;
+    }
+    body[len] = '\0';
+    if (!verify_hmac(nonce, reinterpret_cast<const uint8_t*>(body), static_cast<size_t>(len), sig_hex)) {
+        httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "HMAC-SHA256 signature mismatch");
+        return ESP_FAIL;
+    }
+    char* end1 = nullptr;
+    const float raw_fwd = std::strtof(body, &end1);
+    float raw_turn = 0.0f;
+    if (end1 && end1 != body) {
+        while (*end1 == ' ' || *end1 == ',' || *end1 == '\t') ++end1;
+        char* end2 = nullptr;
+        const float parsed_turn = std::strtof(end1, &end2);
+        if (end2 && end2 != end1) raw_turn = parsed_turn;
+    }
+    const float fwd = std::isfinite(raw_fwd) ? std::clamp(raw_fwd, -1.0f, 1.0f) : 0.0f;
+    const float turn = std::isfinite(raw_turn) ? std::clamp(raw_turn, -1.0f, 1.0f) : 0.0f;
+    if (std::abs(fwd) > 0.01f || std::abs(turn) > 0.01f) {
+        power_mode::note_activity();
+    }
+    robot::steer(fwd, turn);
+
+    char next_nonce_hex[NONCE_BYTES * 2 + 1];
+    attach_next_nonce(req, next_nonce_hex);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
 esp_err_t handle_lan_stream(httpd_req_t* req) {
     set_cors_headers(req);
     if (!auth_empty_request(req)) return ESP_FAIL;
+
+    if (power_mode::is_sleeping()) {
+        char next_nonce_hex[NONCE_BYTES * 2 + 1];
+        attach_next_nonce(req, next_nonce_hex);
+        httpd_resp_set_hdr(req, "X-Power-Mode", idle_power::name(power_mode::current()));
+        httpd_resp_set_hdr(req, "X-Stream-Start", "0");
+        httpd_resp_set_hdr(req, "X-Stream-End", "0");
+        httpd_resp_set_type(req, "application/octet-stream");
+        return httpd_resp_send(req, "", 0);
+    }
+    power_mode::note_activity();
 
     uint32_t ack_seq = 0;
     char query[64] = {};
@@ -710,6 +794,7 @@ esp_err_t handle_lan_stream(httpd_req_t* req) {
     snprintf(end_hdr, sizeof end_hdr, "%lu", static_cast<unsigned long>(end_seq));
     char next_nonce_hex[NONCE_BYTES * 2 + 1];
     attach_next_nonce(req, next_nonce_hex);
+    httpd_resp_set_hdr(req, "X-Power-Mode", "awake");
     httpd_resp_set_hdr(req, "X-Stream-Start", start_hdr);
     httpd_resp_set_hdr(req, "X-Stream-End", end_hdr);
     httpd_resp_set_type(req, "application/octet-stream");
@@ -775,6 +860,7 @@ esp_err_t handle_prog_run(httpd_req_t* req) {
             httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "HMAC-SHA256 mismatch");
             return ESP_FAIL;
         }
+        power_mode::wake();
         const auto lr = prog_vm::start_from_cache(sha_q);
         char resp[256];
         const int n = snprintf(resp, sizeof resp,
@@ -815,6 +901,7 @@ esp_err_t handle_prog_run(httpd_req_t* req) {
     const bool pin = (httpd_req_get_hdr_value_str(req, "X-Prog-Pin", pin_hdr, sizeof pin_hdr) == ESP_OK &&
                       (pin_hdr[0] == '1' || pin_hdr[0] == 't'));
 
+    power_mode::wake();
     const auto lr = prog_vm::start_from_bytes(prog_name, body.data(), body.size(), pin);
     char resp[256];
     const int n = snprintf(resp, sizeof resp,
@@ -918,6 +1005,7 @@ esp_err_t start(std::span<const uint8_t, 32> auth_key) {
         {"/api/ota",            HTTP_POST,    handle_lan_ota,           nullptr},
         {"/api/ota/enter",      HTTP_POST,    handle_ota_enter,         nullptr},
         {"/api/cmd",            HTTP_POST,    handle_lan_cmd,           nullptr},
+        {"/api/drive",          HTTP_POST,    handle_lan_drive,         nullptr},
         {"/api/logs",           HTTP_GET,     handle_lan_logs,          nullptr},
         {"/api/stream",         HTTP_GET,     handle_lan_stream,        nullptr},
         {"/api/prog/run",       HTTP_POST,    handle_prog_run,          nullptr},

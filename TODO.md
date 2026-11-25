@@ -9,21 +9,21 @@
   - [x] `~/gh/esp32-bot/balax` (`https://github.com/esp32-bot/BalaX`)
   - [x] `~/gh/esp32-bot/joyx` (`https://github.com/esp32-bot/JoyX`)
   - [x] `~/gh/esp32-bot/balax-remote` (`https://github.com/esp32-bot/balax-remote`)
-  - [x] `~/gh/esp32-bot/tools` (`https://github.com/esp32-bot/tools`)
+  - [x] `~/gh/esp32-tools/tools` (`https://github.com/esp32-tools/tools`, moved from `esp32-bot/tools`)
   - [x] `~/gh/g-ai/rc` (`https://github.com/g-AI-org/rc`)
   - [x] `~/gh/g-ai/gdog-remote` (`https://github.com/g-AI-org/gdog-remote`)
 - [x] Maximize modularity across `@esp32-bot` and `@g-AI-org`:
-  - [x] Extract shared ESP-IDF components (`m5stickc_plus`, `gfx`, `settings`, `console_commands`, `ota`) and CLI tools into `esp32-bot/tools` (`~/gh/esp32-bot/tools/components`), leaving only `balac` and balancing logic in `balax`
+  - [x] Extract shared ESP-IDF components (`m5stickc_plus`, `gfx`, `settings`, `console_commands`, `ota`) and CLI tools into `esp32-tools/tools` (`~/gh/esp32-tools/tools/components`), leaving only `balac` and balancing logic in `balax`
   - [x] Create shared `@g-ai/rc` (`g-AI-org/rc`) low-latency remote control, link diagnostics, joystick math, and live tuning library and wire it into `esp32-bot/balax-remote`, `g-AI-org/gdog-remote`, and `0SFS/rc`
 
 ## 2. Zero-Install Browser Flasher, LAN OTA & Firmware Hosting (`esp32-bot.github.io`)
-- [x] Create static WebSerial flasher & USB console tool (`web/index.html`) importing shared `https://esp32-bot.github.io/tools/flasher.js`
+- [x] Create static WebSerial flasher & USB console tool (`web/index.html`) importing shared `https://esp32-tools.github.io/tools/flasher.js`
 - [x] Add `tools/bx dist [stable|dev]` (`tools/dist.py`) to package `stable` and `dev` firmware channels (`web/fw/{stable|dev}/manifest.json` + binaries)
-- [x] Add Wi-Fi HTTPS OTA update component (`ota [stable|dev|url|version]`) in `esp32-bot/tools/components/ota`
+- [x] Add Wi-Fi HTTPS OTA update component (`ota [stable|dev|url|version]`) in `esp32-tools/tools/components/ota`
 - [x] Add cryptographic LAN OTA flashing (`tools/bx lan-flash`), LAN log monitoring (`tools/bx lan-monitor`), and LAN command runner (`tools/bx lan-cmd`) using PBKDF2-HMAC-SHA256 + 256-bit hardware TRNG challenge nonces
 
-## 3. Developer Setup One-Liner (`esp32-bot/tools`)
-- [x] Create one-liner bootstrap installer script (`install.sh` / `https://esp32-bot.github.io/tools/install.sh`) that clones `tools`, `balax`, `joyx`, and `balax-remote` into `~/gh/esp32-bot/` and launches the BalaX Studio GUI
+## 3. Developer Setup One-Liner (`esp32-tools/tools`)
+- [x] Create one-liner bootstrap installer script (`install.sh` / `https://esp32-tools.github.io/tools/install.sh`) that clones `tools` into `~/gh/esp32-tools/tools` and `balax`, `joyx`, and `balax-remote` into `~/gh/esp32-bot/` and launches the BalaX Studio GUI
 
 ## 4. Web Remote PWA & 0SFS-Style Babylon.js Live 3D Visualizer (`esp32-bot/balax-remote`)
 - [x] Scaffold installable React + Vite PWA using `@g-ai/rc` with floating joystick, live PID gain sliders, and 100 Hz telemetry strip chart
